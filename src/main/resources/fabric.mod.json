@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "hyfuse",
+  "version": "${version}",
+  "name": "HyFuse",
+  "description": "HyFuse: a fully self-contained Fabric client mod embedding its own MCP server for controlling the real Minecraft client and installed automation mods.",
+  "authors": ["HyFuse project"],
+  "license": "CC0-1.0",
+  "icon": "assets/hyfuse/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.hyfuse.bridge.HyFuseClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "meteor-client": "*"
+  }
+}
