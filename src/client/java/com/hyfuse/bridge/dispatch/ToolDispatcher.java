@@ -664,7 +664,21 @@ public final class ToolDispatcher {
                         || "follow-player".equals(tool) || "guard-area".equals(tool)
                         || "open-container".equals(tool) || "deposit-items".equals(tool)
                         || "withdraw-items".equals(tool)
-                        || "goto-coords".equals(tool);
+                        || "goto-coords".equals(tool)
+                        // T5.3/D1-1: dig-block's break-completion poll loop
+                        // sleeps on the calling thread. On the client thread
+                        // that froze the render loop — the server's
+                        // block-update packet could never be applied mid-loop,
+                        // so getBlockState never observed the break and every
+                        // multi-tick dig reported timeout while the server
+                        // actually broke the block (live T5.2: destroyStage -1,
+                        // get-blocks air immediately after). Same family as
+                        // collect-drops/eat-food below.
+                        || "dig-block".equals(tool)
+                        // T5.3/D1-1 same family: farm-plot harvest shares the
+                        // breakBlockAt poll loop; till/plant/fertilize use
+                        // bounded hand-waits + settle sleeps.
+                        || "farm-plot".equals(tool);
         // Attack-entity / follow-entity / flee-from / path-safely
         // contain Thread.sleep polling loops around Baritone #goto. On the
         // client thread (the non-queue dispatch below) those sleeps froze the
@@ -1322,8 +1336,36 @@ public final class ToolDispatcher {
         result.addProperty("item", item.isEmpty() ? "(held)" : item);
         result.addProperty("interactionResult", String.valueOf(interactionResult));
         result.addProperty("blockAfter", afterName);
-        result.addProperty("portalIgnited",
-                afterName.contains("portal") && !afterName.contains("frame"));
+        // T5.3/D5-1: fire/portal forms at the FACE-RELATIVE destination cell
+        // (flint_and_steel on the interior bottom obsidian UP-face ignites the
+        // cell ABOVE the clicked block), not at the clicked block itself —
+        // the old check read the clicked obsidian and always reported false
+        // even though the portal lit (live T5.2). Check the destination cell
+        // plus the cells above it (portal column) for portal/fire state.
+        BlockPos dest = pos.relative(faceDir);
+        String destName = blockRegistryName(level.getBlockState(dest));
+        boolean portalLit = destName.contains("portal") && !destName.contains("frame");
+        boolean fireLit = destName.contains("fire");
+        // Bounded re-check (total ≤1s): a public server's block-update packet
+        // can land after the 150ms settle — poll until portal/fire appears or
+        // the budget runs out (same stale-snapshot family as D1-1/H4).
+        long litDeadline = System.currentTimeMillis() + 1000;
+        while (!portalLit && !fireLit && System.currentTimeMillis() < litDeadline) {
+            try { Thread.sleep(200); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            destName = blockRegistryName(level.getBlockState(dest));
+            portalLit = destName.contains("portal") && !destName.contains("frame");
+            fireLit = destName.contains("fire");
+        }
+        for (int up = 1; !portalLit && up <= 3; up++) {
+            String upName = blockRegistryName(level.getBlockState(dest.above(up)));
+            portalLit = upName.contains("portal") && !upName.contains("frame");
+        }
+        result.addProperty("blockAtDestination", destName);
+        result.addProperty("fireLit", fireLit);
+        result.addProperty("portalIgnited", portalLit);
         return result;
     }
 
@@ -2338,7 +2380,13 @@ public final class ToolDispatcher {
             return itemRegistryName(inv.getItem(bestSlot));
         }
         // No specialized tool found — keep current selection
-        return itemRegistryName(inv.getItem(inv.getSelectedSlot()));
+        // T5.3/D1-1: syncSelectedSlot changes the selected slot server-side
+        // without immediately updating the client inventory snapshot, so the
+        // OLD held item was echoed in `tool:` when no specialized tool was
+        // found. Re-read the selected stack AFTER the swap so the field
+        // reports the item actually used for the dig.
+        String heldAfterSwap = itemRegistryName(inv.getItem(inv.getSelectedSlot()));
+        return heldAfterSwap.isEmpty() ? "none" : heldAfterSwap;
     }
 
     private static String preferredToolType(BlockState state) {
@@ -3621,6 +3669,39 @@ public final class ToolDispatcher {
             return result;
         }
 
+        // T5.3/I3-1: the containerId flips as soon as the screen opens, but
+        // the server's slot-contents sync can land AFTER that — scanning
+        // immediately sees an empty container and wrongly reports
+        // item_not_in_container (live T5.2: stone x5 visible in the open view,
+        // withdraw failed while cobblestone from the same chest worked).
+        // Bounded wait (1s) for any non-empty container-side slot before
+        // scanning. Skips instantly for genuinely empty containers at the
+        // deadline (an empty chest then still fails honestly below).
+        {
+            long syncDeadline = System.currentTimeMillis() + 1000;
+            boolean contentsSeen = false;
+            while (System.currentTimeMillis() < syncDeadline) {
+                Boolean anyNonEmpty = callOnClient(client, () -> {
+                    int total = client.player.containerMenu.slots.size();
+                    int invStart = total - 36;
+                    for (int i = 0; i < invStart; i++) {
+                        if (!client.player.containerMenu.getSlot(i).getItem().isEmpty()) {
+                            return Boolean.TRUE;
+                        }
+                    }
+                    return Boolean.FALSE;
+                });
+                if (Boolean.TRUE.equals(anyNonEmpty)) { contentsSeen = true; break; }
+                try { Thread.sleep(50); } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt(); break;
+                }
+            }
+            if (!contentsSeen) {
+                com.hyfuse.bridge.HyFuseClient.LOGGER.warn(
+                        "withdraw-items: container slot contents did not sync within 1s of open");
+            }
+        }
+
         // ── Count-exact withdraw via cursor PICKUP split ──
         // Mirror of the depositItems fix: the old block QUICK_MOVE'd whole
         // stacks out of the container, ignoring `count` (observed live on
@@ -4428,6 +4509,11 @@ public final class ToolDispatcher {
 
         // ── Crafting loop (worker thread; per-iteration Minecraft ops via callOnClient) ──
         int craftedCount = 0;
+        // T5.3/H4: zero-count aborts are no longer blanket-reported as
+        // "ran out of ingredients" — track the true reason so cursor races
+        // and server-sync timeouts are reported as what they are.
+        int strandedOutputs = 0;
+        String abortReason = "ran_out_of_ingredients";
         try {
             for (int attempt = 0; attempt < amount; attempt++) {
                 // Re-check craftability + container each iteration on the client thread.
@@ -4470,6 +4556,7 @@ public final class ToolDispatcher {
                             return Integer.valueOf(cid);
                         });
                     } else {
+                        abortReason = "ingredient_depleted_at_attempt_" + attempt;
                         break; // genuine depletion at attempt > 0
                     }
                 } else {
@@ -4501,8 +4588,28 @@ public final class ToolDispatcher {
                     client.gameMode.handlePlaceRecipe(cid, displayId, false);
                     return null;
                 });
-                // Wait a tick for the server to process and update the result slot (worker thread)
-                Thread.sleep(100);
+                // T5.3/H4: a fixed 100ms sleep raced the server's result-slot
+                // sync on live servers — the result PICKUP then clicked an
+                // empty result slot, the crafted output stranded in the grid,
+                // and the tool reported "ran out of ingredients" while the
+                // craft actually executed server-side (live T5.2: chest/furnace
+                // crafted, hoe/torch vanished). Poll (bounded 2s) until the
+                // result slot is actually non-empty before clicking it.
+                boolean resultReady = false;
+                long readyDeadline = System.currentTimeMillis() + 2000;
+                while (System.currentTimeMillis() < readyDeadline) {
+                    Boolean filled = callOnClient(client, () -> Boolean
+                            .valueOf(!client.player.containerMenu.getSlot(0).getItem().isEmpty()));
+                    if (filled != null && filled.booleanValue()) { resultReady = true; break; }
+                    Thread.sleep(50);
+                }
+                if (!resultReady) {
+                    com.hyfuse.bridge.HyFuseClient.LOGGER.warn(
+                            " Result slot never filled at attempt " + attempt
+                                    + " — server did not confirm the craft within 2s");
+                    abortReason = "result_slot_timeout";
+                    break;
+                }
 
                 // Pick up the result from the result slot (slot 0 for crafting).
                 // Only click when the cursor is EMPTY. A live
@@ -4532,6 +4639,7 @@ public final class ToolDispatcher {
                     if (!clean) {
                         com.hyfuse.bridge.HyFuseClient.LOGGER.warn(
                                 " Cursor non-empty before result pickup and no empty slot to deposit; aborting attempt " + attempt);
+                        abortReason = "cursor_stuck_before_result_pickup";
                         break;
                     }
                 }
@@ -4591,12 +4699,14 @@ public final class ToolDispatcher {
                     if (!clean) {
                         com.hyfuse.bridge.HyFuseClient.LOGGER.warn(
                                 " Output not placed and cursor not depositable at attempt " + attempt + "; aborting");
+                        abortReason = "cursor_stuck_after_result_pickup";
                         break;
                     }
                     // Cursor clean but output is stranded on the result slot or
                     // was lost; do not count this iteration as crafted.
                     com.hyfuse.bridge.HyFuseClient.LOGGER.warn(
                             " Output stranded at attempt " + attempt + "; not counted");
+                    strandedOutputs++;
                     continue;
                 }
                 Thread.sleep(50);
@@ -4623,7 +4733,16 @@ public final class ToolDispatcher {
         if (craftedCount > 0) {
             result.addProperty("message", "Successfully crafted " + resolved.resultName() + " " + craftedCount + " time(s)");
         } else {
-            result.addProperty("message", "Failed to craft " + outputItem + ": ran out of ingredients");
+            if (strandedOutputs > 0 && "ran_out_of_ingredients".equals(abortReason)) {
+                abortReason = "output_stranded_not_counted";
+            }
+            // T5.3/H4: honest abort reporting — cursor races and result-slot
+            // sync timeouts were previously misreported as missing ingredients.
+            result.addProperty("message", "Failed to craft " + outputItem + ": " + abortReason);
+            result.addProperty("abortReason", abortReason);
+            if (strandedOutputs > 0) {
+                result.addProperty("strandedOutputs", strandedOutputs);
+            }
         }
         return result;
     }
@@ -4646,6 +4765,13 @@ public final class ToolDispatcher {
      * Furnace menu slots: 0=ingredient, 1=fuel, 2=result, 3-38=player inv
      * (AbstractFurnaceMenu: INGREDIENT_SLOT=0, FUEL_SLOT=1, RESULT_SLOT=2).
      */
+    /** T5.3/H3-1 helper: current count of the furnace result slot (0 when empty).
+     *  MUST be called via callOnClient — reads live menu state. */
+    private static int countOfResult(Minecraft client) {
+        ItemStack s = client.player.containerMenu.getSlot(2).getItem();
+        return s.isEmpty() ? 0 : s.getCount();
+    }
+
     private static JsonObject queueSmeltItem(Minecraft client, JsonObject args) {
         int x = requiredInt(args, "x");
         int y = requiredInt(args, "y");
@@ -4856,18 +4982,40 @@ public final class ToolDispatcher {
             }
 
             // ── Take the output (shift-click result slot 2) + read output identity ──
-            record OutputInfo(String outputName, int outputCount) {}
+            record OutputInfo(String outputName, int outputCount, String resultSlotAfter) {}
             OutputInfo out = callOnClient(client, () -> {
                 ItemStack outputStack = client.player.containerMenu.getSlot(2).getItem();
                 String outputName = itemRegistryName(outputStack);
-                // Read the count AFTER the take-click — the
-                // pre-click read raced the server's next smelt output and
-                // under-reported by 1 (same live stack object, merged count).
-                client.gameMode.handleContainerInput(furnaceCid, 2, 0, ContainerInput.QUICK_MOVE, client.player);
+                // T5.3/H3-1: read the count BEFORE the take-click. The
+                // client-side menu-click prediction shrinks the same live
+                // stack object in place, so the previous post-click read
+                // returned 0 on live servers while the take actually
+                // succeeded (live T5.2: "Smelted 0" with 1 iron_ingot taken).
+                // Within this single client-thread hop no tick elapses between
+                // the read and the click, so no server merge can interleave.
                 int outputCount = outputStack.getCount();
-                return new OutputInfo(outputName, outputCount);
+                client.gameMode.handleContainerInput(furnaceCid, 2, 0, ContainerInput.QUICK_MOVE, client.player);
+                String slotAfter = itemRegistryName(client.player.containerMenu.getSlot(2).getItem());
+                return new OutputInfo(outputName, outputCount, slotAfter);
             });
             Thread.sleep(100);
+            // Bounded verification that the take landed server-side: the
+            // result slot empties (or refills with the NEXT smelt output).
+            long takeDeadline = System.currentTimeMillis() + 2000;
+            boolean takeConfirmed = false;
+            {
+                String before = out.resultSlotAfter();
+                while (System.currentTimeMillis() < takeDeadline) {
+                    String now = callOnClient(client, () -> itemRegistryName(
+                            client.player.containerMenu.getSlot(2).getItem()));
+                    int nowCount = callOnClient(client, () -> countOfResult(client));
+                    if (now.isEmpty() || !now.equals(before) || nowCount != out.outputCount()) {
+                        takeConfirmed = true;
+                        break;
+                    }
+                    Thread.sleep(100);
+                }
+            }
 
             callOnClient(client, () -> { closeContainer(client); return null; });
 
@@ -4876,6 +5024,7 @@ public final class ToolDispatcher {
             result.addProperty("message", "Smelted " + out.outputCount() + " " + out.outputName());
             result.addProperty("output", out.outputName());
             result.addProperty("outputCount", out.outputCount());
+            result.addProperty("takeConfirmed", takeConfirmed);
             return result;
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();

@@ -641,6 +641,17 @@ final class StandingProcessEngine {
         r.addProperty("nextRunAtMs", p.nextRunAtMs);
         r.addProperty("lastError", p.lastError == null ? "": p.lastError);
         r.addProperty("lastMessage", p.lastMessage == null ? "": p.lastMessage);
+        // T5.3/J3-1: a RUNNING process with cycles==0 previously looked wedged
+        // in standing-status (nextRunAtMs = startedAtMs, no lastMessage) while
+        // its first cycle was merely queued behind the single-threaded rail
+        // (T5.2: first cycle ~74s late). Surface the pending state explicitly
+        // so operators/agents can tell "waiting for the rail" from "stuck".
+        if ("RUNNING".equals(p.state) && p.cycles == 0) {
+            r.addProperty("firstCyclePending", true);
+            if (p.lastMessage == null || p.lastMessage.isEmpty()) {
+                r.addProperty("lastMessage", "first cycle pending on the queue rail");
+            }
+        }
         r.add("args", p.args.deepCopy());
         r.add("stopWhen", p.stopWhen.deepCopy());
         return r;
