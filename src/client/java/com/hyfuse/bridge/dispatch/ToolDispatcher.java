@@ -1223,22 +1223,45 @@ public final class ToolDispatcher {
             // Creative: instant break
             client.gameMode.destroyBlock(pos);
         } else {
-            // Survival: start breaking, then continue each tick until broken or timeout
-            client.gameMode.startDestroyBlock(pos, face);
-            player.swing(InteractionHand.MAIN_HAND);
-            while (!level.getBlockState(pos).isAir() && System.currentTimeMillis() < deadline) {
-                client.gameMode.continueDestroyBlock(pos, face);
-                player.swing(InteractionHand.MAIN_HAND);
+            // T5.3-live/D1-2: this handler now runs on the QUEUE worker
+            // (T5.3/D1-1 routing). Every client-state touch below is
+            // marshalled through callOnClient — the raw client-thread loop
+            // raced the render thread on multi-tick digs (live: "Tried to
+            // access render state from outside the main render thread",
+            // the break then never landed server-side and the client's
+            // predicted break resynced back to the real block).
+            final BlockPos fPos = pos;
+            final Direction fFace = face;
+            callOnClient(client, () -> {
+                client.gameMode.startDestroyBlock(fPos, fFace);
+                client.player.swing(InteractionHand.MAIN_HAND);
+                return null;
+            });
+            boolean airNow = Boolean.TRUE.equals(callOnClient(client,
+                    () -> Boolean.valueOf(client.level.getBlockState(fPos).isAir())));
+            while (!airNow && System.currentTimeMillis() < deadline) {
+                callOnClient(client, () -> {
+                    client.gameMode.continueDestroyBlock(fPos, fFace);
+                    client.player.swing(InteractionHand.MAIN_HAND);
+                    return null;
+                });
                 try {
                     Thread.sleep(50); // one tick
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     break;
                 }
+                airNow = Boolean.TRUE.equals(callOnClient(client,
+                        () -> Boolean.valueOf(client.level.getBlockState(fPos).isAir())));
             }
-            if (!level.getBlockState(pos).isAir()) {
-                // Timed out — stop breaking
-                client.gameMode.stopDestroyBlock();
+            if (!airNow) {
+                // Timed out — stop breaking (marshalled)
+                callOnClient(client, () -> {
+                    client.gameMode.stopDestroyBlock();
+                    return null;
+                });
+                Integer stage = callOnClient(client,
+                        () -> Integer.valueOf(client.gameMode.getDestroyStage()));
                 JsonObject result = new JsonObject();
                 result.addProperty("status", "timeout");
                 result.addProperty("x", x);
@@ -1246,7 +1269,7 @@ public final class ToolDispatcher {
                 result.addProperty("z", z);
                 result.addProperty("block", blockName);
                 result.addProperty("tool", toolUsed);
-                result.addProperty("destroyStage", client.gameMode.getDestroyStage());
+                result.addProperty("destroyStage", stage == null ? -1 : stage.intValue());
                 return result;
             }
         }
@@ -1624,8 +1647,19 @@ public final class ToolDispatcher {
         result.addProperty("interactionResult", lastResult);
         return result;
     }
-    /** Click a bucket at a position: look + useItemOn + swing; returns
-     *  String.valueOf(InteractionResult) for consumed checks. */
+    /**
+     * Click a bucket at a position: look + useItemOn + swing; returns
+     * String.valueOf(InteractionResult) for consumed checks.
+     * T5.3-live/E-fill: BucketItem has NO useOn override — bucket pickup
+     * lives in BucketItem.use, which the vanilla client reaches only via
+     * the plain use-item FALLBACK packet it sends after useItemOn PASSes
+     * (javap: net.minecraft.world.item.BucketItem has use(Level,Player,Hand)
+     * but no useOn; emptying a filled bucket DOES ride useItemOn via
+     * DispensibleContainerItem on the block). HyFuse never sent the
+     * follow-up → live fill deterministically PASSed and never scooped.
+     * Fix: after a PASS/TRY_WITH_EMPTY_HAND from useItemOn, send
+     * gameMode.useItem(player, MAIN_HAND) — the vanilla right-click flow.
+     */
     private static String useBucketAt(Minecraft client, LocalPlayer player,
                                       BlockPos pos, Direction faceDir) {
         return callOnClient(client, () -> {
@@ -1634,6 +1668,12 @@ public final class ToolDispatcher {
             BlockHitResult hitResult = new BlockHitResult(hitVec, faceDir, pos, false);
             InteractionResult r = client.gameMode.useItemOn(
                     player, InteractionHand.MAIN_HAND, hitResult);
+            if (String.valueOf(r).contains("Pass")
+                    || String.valueOf(r).contains("TryWithEmptyHand")) {
+                // Vanilla fallback: send the use-item packet so BucketItem.use
+                // (the actual scoop) runs server-side.
+                r = client.gameMode.useItem(player, InteractionHand.MAIN_HAND);
+            }
             player.swing(InteractionHand.MAIN_HAND);
             return String.valueOf(r);
         });
@@ -1720,11 +1760,12 @@ public final class ToolDispatcher {
             result.addProperty("item", hoeName);
             String r = clickBlockFace(client, player, pos, Direction.UP);
             result.addProperty("interactionResult", r);
-            settleThenDescribe(client, pos, result);
-            result.addProperty("status", "farmland");
-            if (!(level.getBlockState(pos).getBlock() instanceof FarmlandBlock)) {
-                result.addProperty("status", "not_farmland_after");
-            }
+            // T5.3-live/F-verify: poll (≤1.5s) for the farmland change
+            // instead of a fixed settle that raced the server sync.
+            BlockState settled = settlePollDescribe(client, pos,
+                    st -> st.getBlock() instanceof FarmlandBlock, result);
+            result.addProperty("status",
+                    settled.getBlock() instanceof FarmlandBlock ? "farmland" : "not_farmland_after");
         } else if (action.equals("plant")) {
             if (item.isEmpty()) {
                 result.addProperty("ok", false);
@@ -1742,10 +1783,21 @@ public final class ToolDispatcher {
             result.addProperty("item", item);
             String r = clickBlockFace(client, player, pos, Direction.UP);
             result.addProperty("interactionResult", r);
-            settleThenDescribe(client, pos, result);
-            String afterName = blockRegistryName(level.getBlockState(pos));
-            result.addProperty("status",
-                    afterName.contains("wheat") || afterName.contains("crop") ? "planted" : "not_planted");
+            // T5.3-live/F-verify: poll for a crop block above, then for the
+            // farmland under it. The planted crop occupies the block ABOVE
+            // the farmland — poll both (crop at y+1, farmland at y).
+            BlockPos cropPos = pos.above();
+            BlockState cropState = settlePollDescribe(client, cropPos,
+                    st -> st.getBlock() instanceof CropBlock, new JsonObject());
+            settlePollDescribe(client, pos,
+                    st -> st.getBlock() instanceof FarmlandBlock || st.getBlock() instanceof CropBlock,
+                    result);
+            if (cropState.getBlock() instanceof CropBlock) {
+                result.addProperty("status", "planted");
+                result.addProperty("cropAt", cropPos.getX() + "," + cropPos.getY() + "," + cropPos.getZ());
+            } else {
+                result.addProperty("status", "not_planted");
+            }
         } else if (action.equals("harvest")) {
             String r = breakBlockAt(client, pos, before);
             result.addProperty("interactionResult", r);
@@ -1814,6 +1866,37 @@ public final class ToolDispatcher {
         });
     }
 
+    /**
+     * T5.3-live/F-verify: bounded poll (up to 1.5s) of the expected state
+     * change, then record the block at pos into result as blockAfter.
+     * Replaces the fixed 150ms settle that raced the live server's block
+     * sync (till/plant landed server-side but the immediate read saw the
+     * pre-change state → false `not_farmland_after` / `not_planted`).
+     * Marshalled through callOnClient (runs on the QUEUE worker).
+     * Returns the settled BlockState (fresh read, not the stale one).
+     */
+    private static BlockState settlePollDescribe(Minecraft client, BlockPos pos,
+            java.util.function.Predicate<BlockState> expected, JsonObject result) {
+        BlockState after = callOnClient(client, () -> client.level.getBlockState(pos));
+        long deadline = System.currentTimeMillis() + 1500;
+        while (after == null || !expected.test(after)) {
+            if (System.currentTimeMillis() >= deadline) break;
+            try { Thread.sleep(50); } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            after = callOnClient(client, () -> client.level.getBlockState(pos));
+        }
+        if (after == null) after = callOnClient(client, () -> client.level.getBlockState(pos));
+        result.addProperty("blockAfter", blockRegistryName(after));
+        if (after.getBlock() instanceof CropBlock crop) {
+            result.addProperty("cropAge", crop.getAge(after));
+            result.addProperty("cropMaxAge", crop.getMaxAge());
+            result.addProperty("cropMaxAgeReached", crop.isMaxAge(after));
+        }
+        return after;
+    }
+
     /** 150ms settle then record the block at pos into result as blockAfter. */
     private static void settleThenDescribe(Minecraft client, BlockPos pos, JsonObject result) {
         try { Thread.sleep(150); } catch (InterruptedException ie) {
@@ -1828,18 +1911,40 @@ public final class ToolDispatcher {
         }
     }
 
-    /** Any hoe in the inventory (registry name), or null when none. */
+    /**
+     * Any hoe in the inventory (registry name), or null when none.
+     * T5.3-live/F-no_hoe: scan the WHOLE inventory (hotbar + main storage),
+     * not just the hotbar — live: diamond_hoe sat in main storage and till
+     * reported no_hoe. equipItemByName handles the hotbar move from there.
+     * Marshalled: runs on the QUEUE worker.
+     */
     private static String anyHoeInInventory(Minecraft client) {
-        for (int i = 0; i < 9; i++) {
-            ItemStack st = client.player.getInventory().getItem(i);
-            if (!st.isEmpty() && simpleName(itemRegistryName(st)).contains("hoe")) {
-                return itemRegistryName(st);
+        String found = callOnClient(client, () -> {
+            Inventory inv = client.player.getInventory();
+            for (int i = 0; i < 9; i++) {
+                ItemStack st = inv.getItem(i);
+                if (!st.isEmpty() && simpleName(itemRegistryName(st)).contains("hoe")) {
+                    return itemRegistryName(st);
+                }
             }
-        }
-        return null;
+            for (int i = 9; i < 36; i++) {
+                ItemStack st = inv.getItem(i);
+                if (!st.isEmpty() && simpleName(itemRegistryName(st)).contains("hoe")) {
+                    return itemRegistryName(st);
+                }
+            }
+            return null;
+        });
+        return found;
     }
 
-    /** Break the block at pos (digBlock core, without auto-tool). Returns "broken". */
+    /**
+     * Break the block at pos (digBlock core, without auto-tool). Returns
+     * "broken" or "timeout". T5.3-live/D1-2: farm-plot runs on the QUEUE
+     * worker — every client-state touch is marshalled through callOnClient
+     * (same fix as digBlock; the unmarshalled loop hit "Tried to access
+     * render state from outside the main render thread" live on harvest).
+     */
     private static String breakBlockAt(Minecraft client, BlockPos pos, BlockState state) {
         LocalPlayer player = client.player;
         ClientLevel level = client.level;
@@ -1847,20 +1952,36 @@ public final class ToolDispatcher {
         lookAtBlockCenter(client, pos);
         long deadline = System.currentTimeMillis() + 25000;
         if (player.isCreative()) {
-            client.gameMode.destroyBlock(pos);
+            callOnClient(client, () -> {
+                client.gameMode.destroyBlock(pos);
+                return null;
+            });
         } else {
-            client.gameMode.startDestroyBlock(pos, face);
-            player.swing(InteractionHand.MAIN_HAND);
-            while (!level.getBlockState(pos).isAir() && System.currentTimeMillis() < deadline) {
-                client.gameMode.continueDestroyBlock(pos, face);
-                player.swing(InteractionHand.MAIN_HAND);
+            callOnClient(client, () -> {
+                client.gameMode.startDestroyBlock(pos, face);
+                client.player.swing(InteractionHand.MAIN_HAND);
+                return null;
+            });
+            boolean airNow = Boolean.TRUE.equals(callOnClient(client,
+                    () -> Boolean.valueOf(client.level.getBlockState(pos).isAir())));
+            while (!airNow && System.currentTimeMillis() < deadline) {
+                callOnClient(client, () -> {
+                    client.gameMode.continueDestroyBlock(pos, face);
+                    client.player.swing(InteractionHand.MAIN_HAND);
+                    return null;
+                });
                 try { Thread.sleep(50); } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     break;
                 }
+                airNow = Boolean.TRUE.equals(callOnClient(client,
+                        () -> Boolean.valueOf(client.level.getBlockState(pos).isAir())));
             }
-            if (!level.getBlockState(pos).isAir()) {
-                client.gameMode.stopDestroyBlock();
+            if (!airNow) {
+                callOnClient(client, () -> {
+                    client.gameMode.stopDestroyBlock();
+                    return null;
+                });
                 return "timeout";
             }
         }
