@@ -267,6 +267,20 @@ public final class McpToolRegistry {
 .string("type", "Type of entity to find (empty for any entity)")
 .number("maxDistance", "Maximum search distance (default: 16)")));
 
+        register("entity-interact",
+                "Right-click interaction primitive for entities: hold an item (optional, auto-equipped when "
+                        + "named) and use it on a nearby entity. Covers breeding (wheat on cows/sheep), taming "
+                        + "(bones on wolves), leading (lead), villager trading, and general entity right-clicks. "
+                        + "Resolves the target by numeric id (from find-entity) or name (nearest match); one-shot "
+                        + "with a small bounded retry while the server passes the click. Reports the interaction "
+                        + "result and inLove:true when a breeding heart-phase started.",
+                objectSchema(schema -> schema
+.string("entityName", "Target entity name (e.g. 'cow') or custom name — nearest match wins")
+.integer("entityId", "Numeric entity id from find-entity (used when entityName is omitted)")
+.string("item", "Optional item to equip and use (e.g. 'wheat', 'bone', 'lead'); when omitted, uses the "
+                                + "currently-held item")
+.integer("attempts", "Bounded retry count while the server passes the click (default 3, max 5)")));
+
         register("scan-nearby-entities",
                 "Scan all entities near the bot and return a structured list with position, distance, hostility, "
                         + "and health. Filter by 'hostile', 'passive', 'player', 'item', or a specific mob name.",

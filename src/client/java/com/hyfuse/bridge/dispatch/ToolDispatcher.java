@@ -23,6 +23,7 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.animal.Animal;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -130,6 +131,7 @@ public final class ToolDispatcher {
                 entry("dig-block", ToolDispatcher::digBlock),
                 entry("place-block", ToolDispatcher::placeBlock),
                 entry("use-item-on-block", ToolDispatcher::useItemOnBlock),
+                entry("entity-interact", ToolDispatcher::entityInteract),
                 entry("scan-area", ToolDispatcher::scanArea),
 
                 // ── Tier C: Inventory Basics ──
@@ -1311,6 +1313,123 @@ public final class ToolDispatcher {
         result.addProperty("blockAfter", afterName);
         result.addProperty("portalIgnited",
                 afterName.contains("portal") && !afterName.contains("frame"));
+        return result;
+    }
+
+    private static JsonObject entityInteract(Minecraft client, JsonObject args) {
+        String entityName = optionalString(args, "entityName", "");
+        int entityId = optionalInt(args, "entityId", -1);
+        if (entityName.isEmpty() && entityId < 0) {
+            return errorJson("Provide entityName or entityId");
+        }
+        String item = optionalString(args, "item", "");
+        int attempts = optionalInt(args, "attempts", 3);
+        if (attempts < 1) attempts = 1;
+        if (attempts > 5) attempts = 5;
+
+        LocalPlayer player = client.player;
+        ClientLevel level = client.level;
+
+        // Resolve the target: by numeric id (find-entity reports it), by
+        // name/custom-name (resolveAttackTarget), or not at all.
+        Entity target = null;
+        if (entityId >= 0) {
+            int id = entityId;
+            target = callOnClient(client, () -> level.getEntity(id));
+        }
+        if (target == null && !entityName.isEmpty()) {
+            target = callOnClient(client, () ->
+                    resolveAttackTarget(level, player, entityName));
+        }
+        if (target == null) {
+            return errorJson("No entity matching "
+                    + (entityName.isEmpty() ? ("id " + entityId) : ("'" + entityName + "'"))
+                    + " found nearby");
+        }
+
+        // Optional: equip the named item first (breeding food, lead, dyes).
+        if (!item.isEmpty()) {
+            equipItemByName(client, item);
+            String desiredSimple = simpleName(normalizeResourceId(item));
+            boolean inHand = false;
+            long deadline = System.currentTimeMillis() + 2000;
+            while (System.currentTimeMillis() < deadline) {
+                ItemStack held = callOnClient(client, () ->
+                        client.player.getMainHandItem());
+                if (!held.isEmpty()
+                        && simpleName(itemRegistryName(held)).equals(desiredSimple)) {
+                    inHand = true;
+                    break;
+                }
+                try { Thread.sleep(50); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            if (!inHand) {
+                JsonObject result = new JsonObject();
+                result.addProperty("ok", false);
+                result.addProperty("status", "no_item_in_hand");
+                result.addProperty("item", item);
+                return result;
+            }
+        }
+
+        // One-shot interaction with a small bounded retry: server cooldowns
+        // can eat a click, so re-click while the result is a plain PASS, but
+        // stop as soon as the server signals the action was consumed.
+        String lastResult = "";
+        boolean consumed = false;
+        for (int i = 0; i < attempts; i++) {
+            final Entity fTarget = target;
+            final String result2 = callOnClient(client, () -> {
+                if (fTarget.isRemoved() || !fTarget.isAlive()
+                        || level.getEntity(fTarget.getId()) == null) return "gone";
+                lookAtEntity(client, fTarget);
+                EntityHitResult hit = new EntityHitResult(fTarget);
+                InteractionResult r = client.gameMode.interact(
+                        player, fTarget, hit, InteractionHand.MAIN_HAND);
+                player.swing(InteractionHand.MAIN_HAND);
+                return String.valueOf(r);
+            });
+            if ("gone".equals(result2)) break;
+            lastResult = result2;
+            // MC 26.2 InteractionResult is a sealed interface; SUCCESS and
+            // its variants consume the action — a Pass means nothing happened.
+            consumed = result2.startsWith("Success") || result2.contains("Consume");
+            if (consumed) break;
+            try { Thread.sleep(300); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        // Brief settle for the server round-trip, then soft verification:
+        // no block-state diff exists for entities, so report the interaction
+        // result plus the breed signal (Animal.isInLove) when applicable.
+        try { Thread.sleep(200); } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        final Entity fTarget2 = target;
+        Boolean inLove = callOnClient(client, () ->
+                fTarget2 instanceof Animal a ? a.isInLove() : null);
+        JsonObject result = new JsonObject();
+        result.addProperty("ok", true);
+        result.addProperty("status", consumed ? "interacted" : "passed");
+        result.addProperty("entityType", callOnClient(client, () ->
+                entityRegistryName(fTarget2)));
+        result.addProperty("entityId", callOnClient(client, () ->
+                fTarget2.getId()));
+        result.addProperty("x", callOnClient(client, () -> fTarget2.getX()));
+        result.addProperty("y", callOnClient(client, () -> fTarget2.getY()));
+        result.addProperty("z", callOnClient(client, () -> fTarget2.getZ()));
+        double dist = callOnClient(client, () ->
+                Math.sqrt(fTarget2.distanceToSqr(client.player)));
+        result.addProperty("distance", dist);
+        result.addProperty("item", item.isEmpty() ? "(held)" : item);
+        result.addProperty("interactionResult", lastResult);
+        result.addProperty("inLove", inLove == null ? false : inLove);
+        result.addProperty("inLoveApplicable", inLove != null);
         return result;
     }
 

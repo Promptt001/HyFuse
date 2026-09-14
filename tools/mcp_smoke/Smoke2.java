@@ -34,11 +34,11 @@ public class Smoke2 {
             JsonObject si = init.getAsJsonObject("result").getAsJsonObject("serverInfo");
             check("initialize nested serverInfo", si.has("name") && si.has("version"), init.toString());
 
-            // 2. tools/list: 80 tools, every entry well-formed (79 + use-item-on-block, T4.4)
+            // 2. tools/list: 81 tools, every entry well-formed (79 + use-item-on-block T4.4 + entity-interact T4.5)
             JsonObject list = JsonParser.parseString(post(
                     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}")).getAsJsonObject();
             JsonArray tools = list.getAsJsonObject("result").getAsJsonArray("tools");
-            check("tools/list count == 80", tools.size() == 80, "got " + tools.size());
+            check("tools/list count == 81", tools.size() == 81, "got " + tools.size());
 
             Map<String, JsonObject> byName = new LinkedHashMap<>();
             Set<String> badShape = new LinkedHashSet<>();
