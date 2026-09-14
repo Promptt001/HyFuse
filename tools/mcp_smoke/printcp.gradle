@@ -1,0 +1,27 @@
+// Init script for generating the smoke-suite runtime classpath from Gradle.
+//
+// Usage: ./gradlew --no-daemon -q printcp --init-script tools/mcp_smoke/printcp.gradle
+// Prints one line: CLIENTCP=<path-separated jar/dir list> (the resolved
+// client source set compile classpath: fabric-loader, fabric-api modules,
+// gson, brigadier, MC jar, ...).
+//
+// Do NOT hand-pick jars for the smoke suites — the minimal recipe misses
+// fabric-loader and the individual fabric-api modules and dies with
+// NoClassDefFoundError at runtime. See HANDOVER.md §14.
+allprojects {
+  afterEvaluate { proj ->
+    if (proj == gradle.rootProject) {
+      proj.tasks.register('printcp') {
+        doLast {
+          def sb = new StringBuilder()
+          try {
+            for (f in proj.sourceSets.client.compileClasspath.files) {
+              sb.append(f.absolutePath).append(File.pathSeparator)
+            }
+          } catch (Throwable t) { sb.append("ERR:").append(t.message) }
+          println "CLIENTCP=" + sb.toString()
+        }
+      }
+    }
+  }
+}
