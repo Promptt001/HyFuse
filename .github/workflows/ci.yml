@@ -1,0 +1,54 @@
+# HyFuse CI — build + 11-suite smoke gate (T4.7).
+#
+# The smoke gate is fully headless: the suites boot McpHttpServer against
+# null/stub dispatchers and inject capability maps directly — no Minecraft
+# client process, no display, no game assets beyond the loom-resolved
+# classpath that ./gradlew build itself produces. tools/mcp_smoke/
+# run_suites.sh is self-contained (T1.6): it regenerates the classpath via
+# the printcp init script and compiles the suites into $SMOKE_WORK.
+#
+# Triggers: push to main (the sole-operator linear-history channel) and
+# manual dispatch. pull_request omitted by design — this repo uses direct
+# pushes to main (HANDOVER.md §17/T2).
+#
+# JDK note: loom 1.17 / MC 26.2 requires Java 25.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v7
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Build
+        run: ./gradlew build --no-daemon
+
+      - name: Upload jar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyfuse-jar
+          path: build/libs/hyfuse-*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Smoke suites (11/11 gate)
+        run: bash tools/mcp_smoke/run_suites.sh
