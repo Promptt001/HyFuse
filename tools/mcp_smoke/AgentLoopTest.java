@@ -5,7 +5,10 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -62,6 +65,37 @@ public final class AgentLoopTest {
                     || !fn.has("parameters")) allWellFormed = false;
         }
         check("toolsForApi entries well-formed", allWellFormed, "some entry malformed");
+
+        // 3b. Agent toolset pin (T4.2): Ring-1 exposure is exactly the lean
+        //     set from docs/AGENT_TOOLSET.md; Ring-2 is hidden unless its
+        //     capability gate reads true. Default presence snapshot = empty
+        //     -> Ring-2 hidden.
+        Set<String> names = new HashSet<>();
+        for (var el : tools) {
+            names.add(el.getAsJsonObject().getAsJsonObject("function").get("name").getAsString());
+        }
+        check("agent toolset size is Ring-1 only (24)", names.size() == 24,
+                "size " + names.size());
+        check("agent toolset excludes operator tools",
+                !names.contains("agent-stop") && !names.contains("send-chat")
+                        && !names.contains("navigate-v2") && !names.contains("move-in-direction"),
+                "operator/steering tool leaked into agent set");
+        check("agent toolset includes spine tools",
+                names.contains("get-agent-snapshot") && names.contains("goto-coords")
+                        && names.contains("craft-item") && names.contains("standing-start"),
+                "spine tool missing");
+        // Ring-2 gating: with an empty presence snapshot, gated tools hidden;
+        // with worldCache=true, the gated sensing tools appear.
+        AgentLoop.capabilityPresence = Map.of("worldCache", true);
+        JsonArray gated = AgentLoop.toolsForApi();
+        Set<String> gatedNames = new HashSet<>();
+        for (var el : gated) {
+            gatedNames.add(el.getAsJsonObject().getAsJsonObject("function").get("name").getAsString());
+        }
+        check("worldCache=true admits scan-nearby-entities + find-ore-veins",
+                gatedNames.contains("scan-nearby-entities") && gatedNames.contains("find-ore-veins")
+                        && gatedNames.size() == 26, "gated size " + gatedNames.size());
+        AgentLoop.capabilityPresence = Map.of(); // restore default
 
         // 4. Full two-iteration loop with a scripted transport.
         //    Iteration 0: respond with one tool_call (get-world-time).
