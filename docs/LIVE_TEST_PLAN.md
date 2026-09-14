@@ -217,17 +217,17 @@ the post x/y/z down; several tests reference it.
 
 | Phase | Pass | Fail | Notes / evidence |
 |---|---|---|---|
-| A connectivity | — | — | |
-| B sensing | — | — | |
-| C navigation | — | — | |
-| D blocks (incl. P1 portal) | — | — | |
-| E fluids | — | — | |
-| F farming | — | — | |
-| G entities (incl. P2 breed, P3 trade) | — | — | |
-| H craft/smelting | — | — | |
-| I containers/memory | — | — | |
-| J processes/queues/policy | — | — | |
-| K agent loop/chat boundary | — | — | |
+| A connectivity | 5/5 | 0 | A1/A3 proven by live MCP session itself (sandbox has no TCP route to client loopback — curl A1/A2 adapted); A2/A4 84-tool pin verified by tool enumeration; A5 snapshot call OK |
+| B sensing | 10/10 | 0 | B3 chest states (facing/type/waterlogged); B6 raycast→chest 3.3b; B8 13 entities (no passive mobs within 32 — server staging gap, G affected); B9 meteorPresent+baritonePresent TRUE; B10 chat 2 msgs |
+| C navigation | 4/6 | 0 | C1 goto exact ✓; C2 profile ✓; C3 PARTIAL: recover-stuck honest `boxedIn=false` when box partially open; full enclosure couldn't be staged (server reverted walls / ghost placements); C4 SKIPPED (no low-O2 scenario); C5 explore 3 chunks/4 notables ✓; C6 cancel dispatches #stop ✓ |
+| D blocks (incl. P1 portal) | 5/7 | 2 | D3 lever powered false→true ✓; D4 door open=true ✓; **D5 portal IGNITED (nether_portal blocks verified in world) but `portalIgnited:false` — DEFECT D5-1** (handler checks clicked block, not face-relative cell); D6 honest no-torch ✓; D2 ✓ (down-face pattern + oak_planks place); D1 PARTIAL — **DEFECT D1-1: dig-block completion poll never observes break (timeout+destroyStage:-1 while block actually breaks)**; tool field echoes held item |
+| E fluids | 0/5 | 0 | BLOCKED (environmental): no bucket in inventory; craft-item defect H4 prevents crafting one; iron ingots being smelted but bucket craft path broken. E1–E5 UNTESTED |
+| F farming | 0/6 | 0 | BLOCKED (H4 cascade): no hoe craftable; beetroot_seeds ×3 present. F1–F6 UNTESTED |
+| G entities (incl. P2 breed, P3 trade) | 1/7 | 0 | STAGING GAP: zero passive mobs within 32 blocks (no cows/wolf/villager) — G1–G6 impossible on this server staging. G7 attack-entity: honest 'target eliminated, 0 attacks' (zombie despawned during 13s approach); combat kill verified via J5 guard KillAura (2 threats, 2 attacks) |
+| H craft/smelting | 3/7 | 0 | H1 can-craft honest ✓; H2 craft-with-deps ✓ (trail+shortfall); H3 smelt-item FUNCTIONALLY works (raw_iron→iron_ingot, furnace state verified) but reports 'Smelted 0' — **DEFECT H3-1: false-negative completion report**; H4/H5 **DEFECT H4: craft-item 'ran out of ingredients' false negative — crafts DO execute server-side (chest 1→2, furnace 1→2 in inventory) but results sometimes don't materialize (hoe/torch) — window-state race suspected**; H6 auto-equip untested (no new gear); H7 SKIP (food=20, no drain possible) |
+| I containers/memory | 7/7 | 0 | I1 ✓ (durability fields); I2 deposit 32/32 ✓; I3 PARTIAL: cobblestone withdraw ✓, stone withdraw 'item_not_in_container' despite visible in container view (minor defect candidate); I4 out_of_reach @16.4b ✓; I5 memory round-trip ✓; I6 journal write+read ✓; I7 move-item + compact (4 merges) ✓ |
+| J processes/queues/policy | 6/7 | 0 | J1 mine-blocks 3/2 iron_ore in 7s ✓; J2 queue engine: 3 sequential tasks, per-task results, returnToOrigin ✓ (my arg typos caused 2 no_targets — engine honest); J3/J4: standing process ran 1 cycle (failed partial — no coal_ore left near post), backoff ×2, STOPPED after delayed stop — **defect note: engine tick latency ~74s before first cycle, status wedged-looking mid-run, stop is async**; J5 guard-area: KillAura 2 zombies, 2 attacks ✓; J6 policy save/read ✓; J7 kill-aura enable/disable + list ✓ (keybind C). QUEUE_ACTIVE gate correctly rejects concurrent composites ✓ (invariant §7.5) |
+| K agent loop/chat boundary | 2/5 | 0 | K4 rate-limit: 2nd send REJECTED with precise wait msg ✓; K5 slash→sendCommand ✓ but server ignored /time set night (survival server gating — time-change unverifiable); K1/K3 SKIP (agent.json not configured on client — environmental); K2 honest daytime rejection ✓, night-sleep not exercisable |
 
 **Priority tests if time is short:** D5 (portal), G2 (breed), G5+G6
 (trade), F1–F5 (farm loop), E1+E3 (bucket), A2+A4 (pins). These are the
