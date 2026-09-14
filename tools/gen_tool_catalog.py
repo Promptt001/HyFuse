@@ -30,7 +30,7 @@ CATEGORIES = [
       "recover-stuck", "escape-water", "fly-to", "set-movement-profile"]),
     ("Blocks & building", "blocks--building",
      "Direct world manipulation, from single blocks to blueprint structures.",
-     ["dig-block", "place-block", "use-item-on-block", "build-structure", "look-at", "place-torch"]),
+     ["dig-block", "place-block", "use-item-on-block", "bucket-fluid", "build-structure", "look-at", "place-torch"]),
     ("Crafting & processing", "crafting--processing",
      "The recipe pipeline: resolution against the live recipe book, recursive "
      "dependency planning, furnace operation, and body maintenance.",

@@ -340,6 +340,22 @@ public final class McpToolRegistry {
 .enumeration("faceDirection", "Face of the target block to click (default: 'up')",
                                 "up", "down", "north", "south", "east", "west")));
 
+        register("bucket-fluid",
+                "Bucket/fluid primitive: fill a bucket from a fluid source (water, lava, powder snow) or place "
+                        + "a fluid from a filled bucket. fill auto-finds the nearest source when x/y/z are omitted; "
+                        + "place clicks a block face and the fluid appears beside it (or at the position itself "
+                        + "when replaceable). Auto-equips the required bucket. Verifies by fluid-state change and "
+                        + "reports the fluid found at the position after the action.",
+                objectSchema(schema -> schema
+.enumeration("action", "'fill' scoops a source into an empty bucket; 'place' empties a filled bucket (default: 'fill')",
+                                "fill", "place")
+.enumeration("fluid", "Fluid type (default: 'water')", "water", "lava", "powder_snow")
+.number("x", "X coordinate — the fluid source (fill) or block face (place)")
+.number("y", "Y coordinate")
+.number("z", "Z coordinate")
+.enumeration("faceDirection", "Face of the target block to click for place (default: 'up')",
+                                "up", "down", "north", "south", "east", "west")));
+
         register("scan-area",
                 "Survey the blocks around the bot: block type counts, hazards (lava, fire, cactus,...), and optional "
                         + "filter matches",

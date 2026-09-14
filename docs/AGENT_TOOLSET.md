@@ -2,7 +2,7 @@
 
 > **Status:** RATIFIED — lean set (operator 2026-09-14), trimmed from 41 → 24
 > to sit near the 15–20 accuracy band. Implemented in `AgentLoop` (T4.2).
-> The full registry (now 81 tools) stays untouched on the MCP/OpenAPI doors
+> The full registry (now 82 tools) stays untouched on the MCP/OpenAPI doors
 > (operator surface). Selection accuracy degrades measurably past 15–20
 > tools; HyFuse previously sent all 79 unfiltered.
 >
@@ -10,7 +10,7 @@
 > (policies), repetition (standing processes), and manual real-time control
 > are deliberately *not* the LLM's job.
 
-## Ring 1 — Lean agent set (26 tools, default exposure)
+## Ring 1 — Lean agent set (27 tools, default exposure)
 
 ### Sense & orient (3)
 - `get-agent-snapshot` — one-call brain refresh; absorbs 4 standalone tools
@@ -27,6 +27,7 @@
 - `place-block` — building primitive (materialPalette substitution)
 - `attack-entity` — hunting/threat removal (kills but never picks up)
 - `entity-interact` — entity right-click: breed/tame/lead/trade (T4.5)
+- `bucket-fluid` — water/lava/powder-snow: fill or place (T4.6)
 - `collect-drops` — turns kills/mines into inventory (load-bearing)
 - `eat-food` — hunger reflex triggered deliberately
 

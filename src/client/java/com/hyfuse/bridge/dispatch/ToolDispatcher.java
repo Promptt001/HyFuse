@@ -21,6 +21,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.animal.Animal;
@@ -132,6 +133,7 @@ public final class ToolDispatcher {
                 entry("place-block", ToolDispatcher::placeBlock),
                 entry("use-item-on-block", ToolDispatcher::useItemOnBlock),
                 entry("entity-interact", ToolDispatcher::entityInteract),
+                entry("bucket-fluid", ToolDispatcher::bucketFluid),
                 entry("scan-area", ToolDispatcher::scanArea),
 
                 // ── Tier C: Inventory Basics ──
@@ -1433,6 +1435,188 @@ public final class ToolDispatcher {
         return result;
     }
 
+    private static JsonObject bucketFluid(Minecraft client, JsonObject args) {
+        String action = optionalString(args, "action", "fill").toLowerCase();
+        if (!action.equals("fill") && !action.equals("place")) {
+            return errorJson("action must be 'fill' or 'place'");
+        }
+        String fluid = optionalString(args, "fluid", "water").toLowerCase();
+        if (!fluid.equals("water") && !fluid.equals("lava")
+                && !fluid.equals("powder_snow")) {
+            return errorJson("fluid must be 'water', 'lava', or 'powder_snow'");
+        }
+        String faceDirName = optionalString(args, "faceDirection", "up");
+        Direction faceDir = Direction.byName(faceDirName.toLowerCase());
+        if (faceDir == null) faceDir = Direction.UP;
+
+        LocalPlayer player = client.player;
+        ClientLevel level = client.level;
+
+        // Resolve the target position. fill: click ON the fluid source
+        // itself (vanilla scoops at the clicked position). place: click a
+        // solid block face; the fluid appears at pos.relative(face) — or at
+        // the clicked pos itself when the block there is replaceable.
+        BlockPos pos = null;
+        boolean hasCoords = args.has("x") && args.has("y") && args.has("z");
+        if (hasCoords) {
+            pos = new BlockPos(requiredInt(args, "x"), requiredInt(args, "y"),
+                    requiredInt(args, "z"));
+        } else if (action.equals("fill")) {
+            // Auto-find: nearest fluid source of the requested type (fluids
+            // are not reliably discoverable through find-blocks).
+            BlockPos origin = player.blockPosition();
+            pos = callOnClient(client, () ->
+                    findNearestFluidSource(level, origin, 12, fluid));
+            if (pos == null) {
+                JsonObject result = new JsonObject();
+                result.addProperty("ok", false);
+                result.addProperty("status", "no_fluid_found");
+                result.addProperty("fluid", fluid);
+                return result;
+            }
+        } else {
+            return errorJson("place requires x/y/z (the block face to click)");
+        }
+        final BlockPos fPos = pos;
+
+        // Equip the required item: empty bucket for fill, <fluid>_bucket for
+        // place. The fluid arg doubles as the item name for place.
+        String desiredItem = action.equals("fill") ? "bucket" : fluid + "_bucket";
+        equipItemByName(client, desiredItem);
+        String desiredSimple = simpleName(normalizeResourceId(desiredItem));
+        boolean inHand = false;
+        long deadline = System.currentTimeMillis() + 2000;
+        while (System.currentTimeMillis() < deadline) {
+            ItemStack held = callOnClient(client, () -> client.player.getMainHandItem());
+            if (!held.isEmpty()
+                    && simpleName(itemRegistryName(held)).equals(desiredSimple)) {
+                inHand = true;
+                break;
+            }
+            try { Thread.sleep(50); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        if (!inHand) {
+            JsonObject result = new JsonObject();
+            result.addProperty("ok", false);
+            result.addProperty("status", "no_item_in_hand");
+            result.addProperty("item", desiredItem);
+            result.addProperty("x", fPos.getX());
+            result.addProperty("y", fPos.getY());
+            result.addProperty("z", fPos.getZ());
+            return result;
+        }
+
+        // Clicks and world reads are marshalled to the client thread. Fill
+        // wants the source gone; place wants fluid present at placeTarget.
+        boolean replaceableAtPos = callOnClient(client, () ->
+                level.getBlockState(fPos).canBeReplaced());
+        BlockPos placeTarget = replaceableAtPos ? fPos : fPos.relative(faceDir);
+        boolean wasSource = callOnClient(client, () ->
+                level.getFluidState(fPos).isSource());
+
+        String lastResult = "";
+        for (int i = 0; i < 3; i++) {
+            final Direction fFace = faceDir;
+            final String fAction = action; // kept for clarity; helper is face-only
+            String r = useBucketAt(client, player, fPos, fFace);
+            lastResult = r;
+            boolean changed;
+            if (action.equals("fill")) {
+                changed = !callOnClient(client, () ->
+                        level.getFluidState(fPos).isSource());
+            } else {
+                changed = !callOnClient(client, () ->
+                        level.getFluidState(placeTarget).isEmpty());
+            }
+            if (changed || r.startsWith("Success") || r.contains("Consume")) break;
+            try { Thread.sleep(300); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        try { Thread.sleep(200); } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        String status;
+        String fluidAfter;
+        if (action.equals("fill")) {
+            boolean gone = !callOnClient(client, () ->
+                    level.getFluidState(fPos).isSource());
+            status = gone ? "filled" : "not_filled";
+            fluidAfter = callOnClient(client, () ->
+                    fluidRegistryName(level.getFluidState(fPos)));
+        } else {
+            boolean placed = !callOnClient(client, () ->
+                    level.getFluidState(placeTarget).isEmpty());
+            if (!placed) {
+                placed = !callOnClient(client, () ->
+                        level.getFluidState(fPos).isEmpty());
+            }
+            status = placed ? "placed" : "not_placed";
+            fluidAfter = callOnClient(client, () ->
+                    fluidRegistryName(level.getFluidState(placeTarget)));
+        }
+        JsonObject result = new JsonObject();
+        result.addProperty("ok", status.equals("filled") || status.equals("placed"));
+        result.addProperty("status", status);
+        result.addProperty("action", action);
+        result.addProperty("fluid", fluid);
+        result.addProperty("x", fPos.getX());
+        result.addProperty("y", fPos.getY());
+        result.addProperty("z", fPos.getZ());
+        result.addProperty("item", desiredItem);
+        result.addProperty("fluidAfter", fluidAfter);
+        result.addProperty("interactionResult", lastResult);
+        return result;
+    }
+    /** Click a bucket at a position: look + useItemOn + swing; returns
+     *  String.valueOf(InteractionResult) for consumed checks. */
+    private static String useBucketAt(Minecraft client, LocalPlayer player,
+                                      BlockPos pos, Direction faceDir) {
+        return callOnClient(client, () -> {
+            lookAtFacePoint(client, pos, faceDir);
+            Vec3 hitVec = facePointHitVec(pos, faceDir);
+            BlockHitResult hitResult = new BlockHitResult(hitVec, faceDir, pos, false);
+            InteractionResult r = client.gameMode.useItemOn(
+                    player, InteractionHand.MAIN_HAND, hitResult);
+            player.swing(InteractionHand.MAIN_HAND);
+            return String.valueOf(r);
+        });
+    }
+
+    /** Registry name of the fluid in a FluidState ("water", "lava", ...). */
+    private static String fluidRegistryName(FluidState state) {
+        Identifier key = BuiltInRegistries.FLUID.getKey(state.getType());
+        return key == null ? "unknown" : key.toString();
+    }
+
+    /** Nearest fluid source of the named type within a cube radius. */
+    private static BlockPos findNearestFluidSource(ClientLevel level, BlockPos origin,
+                                                   int radius, String fluid) {
+        String needle = stripNamespace(fluid).toLowerCase();
+        BlockPos nearest = null;
+        double nearestDist = Double.MAX_VALUE;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    BlockPos pos = origin.offset(dx, dy, dz);
+                    if (!level.getFluidState(pos).isSource()) continue;
+                    String name = fluidRegistryName(level.getFluidState(pos));
+                    if (!name.contains(needle)) continue;
+                    double dist = dx * dx + dy * dy + dz * dz;
+                    if (dist < nearestDist) {
+                        nearest = pos;
+                        nearestDist = dist;
+                    }
+                }
+            }
+        }
+        return nearest;
+    }
     private static JsonObject placeBlock(Minecraft client, JsonObject args) {
         int x = requiredInt(args, "x");
         int y = requiredInt(args, "y");
