@@ -72,7 +72,7 @@ public class OpenApiTest {
                         || !schema.has("properties")) badShape.add(id + ":schema");
                 if (!op.has("description")) badShape.add(id + ":no-description");
             }
-            check("spec paths == registry tool count (82)", ops.size() == 82, "got " + ops.size());
+            check("spec paths == registry tool count (83)", ops.size() == 83, "got " + ops.size());
             check("all spec operations well-formed (/tools/{id}, object schema, description)",
                     badShape.isEmpty(), badShape.toString());
 

@@ -315,7 +315,7 @@ public final class AgentLoop {
             "get-agent-snapshot", "get-events", "find-blocks",
             "goto-coords", "recover-stuck",
             "mine-blocks", "dig-block", "place-block", "use-item-on-block",
-            "attack-entity", "entity-interact", "bucket-fluid", "collect-drops", "eat-food",
+            "attack-entity", "entity-interact", "bucket-fluid", "farm-plot", "collect-drops", "eat-food",
             "craft-item", "can-craft", "smelt-item",
             "list-inventory", "auto-equip-best-gear", "deposit-items",
             "memory-save", "memory-read", "policy-save", "standing-start",

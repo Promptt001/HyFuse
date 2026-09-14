@@ -74,7 +74,7 @@ public final class AgentLoopTest {
         for (var el : tools) {
             names.add(el.getAsJsonObject().getAsJsonObject("function").get("name").getAsString());
         }
-        check("agent toolset size is Ring-1 only (27)", names.size() == 27,
+        check("agent toolset size is Ring-1 only (28)", names.size() == 28,
                 "size " + names.size());
         check("agent toolset excludes operator tools",
                 !names.contains("agent-stop") && !names.contains("send-chat")
@@ -85,7 +85,8 @@ public final class AgentLoopTest {
                         && names.contains("craft-item") && names.contains("standing-start")
                         && names.contains("use-item-on-block")
                         && names.contains("entity-interact")
-                        && names.contains("bucket-fluid"),
+                        && names.contains("bucket-fluid")
+                        && names.contains("farm-plot"),
                 "spine tool missing");
         // Ring-2 gating: with an empty presence snapshot, gated tools hidden;
         // with worldCache=true, the gated sensing tools appear.
@@ -97,7 +98,7 @@ public final class AgentLoopTest {
         }
         check("worldCache=true admits scan-nearby-entities + find-ore-veins",
                 gatedNames.contains("scan-nearby-entities") && gatedNames.contains("find-ore-veins")
-                        && gatedNames.size() == 29, "gated size " + gatedNames.size());
+                        && gatedNames.size() == 30, "gated size " + gatedNames.size());
         AgentLoop.capabilityPresence = Map.of(); // restore default
 
         // 4. Full two-iteration loop with a scripted transport.

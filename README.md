@@ -7,14 +7,14 @@
 **A Fabric client mod that turns Minecraft into an MCP-controlled agent platform.**
 
 One JAR. No Node, no Python brain, no external tool server — the mod *is* the
-MCP server, embedding **82 tools** that let any AI agent sense, move, mine,
+MCP server, embedding **83 tools** that let any AI agent sense, move, mine,
 build, craft, fight, and survive in the real game.
 
 [![Minecraft](https://img.shields.io/badge/Minecraft-26.2-44b3a2)](https://fabricmc.net/develop)
 [![Fabric](https://img.shields.io/badge/Fabric%20Loader-0.19.5-dbbf52)](https://fabricmc.net)
 [![Java](https://img.shields.io/badge/Java-25-f89820)](https://openjdk.org)
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-626ed1)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/Tools-82-4dabf7)](docs/TOOL_CATALOG.md)
+[![Tools](https://img.shields.io/badge/Tools-83-4dabf7)](docs/TOOL_CATALOG.md)
 [![License: CC0](https://img.shields.io/badge/License-CC0_1.0-8a8a8a)](LICENSE)
 
 *Point your agent at one URL. It plays the game.*
@@ -39,7 +39,7 @@ HyFuse collapses the entire chain into **one self-contained Fabric mod**:
 | Transport | Node bridge + Python brain | MCP server inside the game client |
 | Client | Headless bot account | Your real client, real account, real world |
 | Setup | `npm install`, config files, port wrangling | Drop the JAR in `mods/` |
-| Surface | A handful of ad-hoc endpoints | 82 typed MCP tools + an OpenAPI mirror |
+| Surface | A handful of ad-hoc endpoints | 83 typed MCP tools + an OpenAPI mirror |
 |Brains| LLM loop in a sidecar process | Optional embedded agent loop — or drive it yourself |
 
 <img src="docs/images/architecture-diagram.webp" alt="Agent to MCP to Fabric client to Baritone and Meteor" width="720">
@@ -78,7 +78,7 @@ chat ends.
   OpenAI-compatible LLM with the full tool surface, runnable from an
   in-game `/hyfuse set goal` command typed at the keyboard.
 
-<img src="docs/images/tool-map.webp" alt="The 82 tools grouped by category" width="720">
+<img src="docs/images/tool-map.webp" alt="The 83 tools grouped by category" width="720">
 
 ## Connect an agent in 60 seconds
 
@@ -116,7 +116,7 @@ served on that port, both bearer-gated: the MCP Streamable-HTTP endpoint at
 From the agent machine, verify the port answers and the token works:
 
 ```bash
-# MCP JSON-RPC: list all 82 tools
+# MCP JSON-RPC: list all 83 tools
 curl http://<client IP>:25581/mcp \
   -H "Authorization: Bearer TESTKEY" -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
@@ -125,7 +125,7 @@ curl http://<client IP>:25581/mcp \
 Prefer OpenAPI? The same server mirrors every tool as REST:
 
 ```bash
-# Full OpenAPI 3.1 spec — 82 paths
+# Full OpenAPI 3.1 spec — 83 paths
 curl http://127.0.0.1:25581/mcp/openapi.json
 
 # Call a tool directly
@@ -183,7 +183,7 @@ from the provider's cloud and need a reachable public endpoint.
 | **ChatGPT** | Settings → Connectors → enable **Developer mode** (under Advanced settings), then **Add a custom connector** and paste the remote MCP server URL | Requires a paid plan. Also connects from OpenAI's cloud — same reachability requirement |
 | **Any MCP client / your own code** | Point it at `http://<client IP>:25581/mcp` and call `tools/list` | Streamable HTTP with bearer auth; MCP JSON-RPC requests work directly |
 
-> **OpenWebUI has been tested end-to-end with HyFuse** — 82 tools discovered,
+> **OpenWebUI has been tested end-to-end with HyFuse** — 83 tools discovered,
 > native tool calls returning live game data. Claude and ChatGPT are
 > supported through their standard remote-MCP custom-connector flows, which
 > match the transport HyFuse serves (Streamable HTTP); they are not yet
@@ -212,7 +212,7 @@ If your agent can't see the client, check these in order:
 The protocol is plain HTTP — use it on networks you trust. Port `0` disables
 the server entirely.
 
-## The tool surface — 82 tools at a glance
+## The tool surface — 83 tools at a glance
 
 | Category | Count | Highlights |
 |---|---|---|
@@ -287,7 +287,7 @@ export JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64   # JDK 25 required for MC 2
 ```
 
 The jar lands in `build/libs/hyfuse-<version>.jar`. Eleven Java smoke suites
-(82-tool registry pin, handler parity, slot maps, craft resolution, queue,
+(83-tool registry pin, handler parity, slot maps, craft resolution, queue,
 sensing, send-chat guard, playbook, agent loop, goal sessions, OpenAPI
 parity) live in `tools/mcp_smoke/` — see
 [docs/CODEBASE_REFERENCE.md](docs/CODEBASE_REFERENCE.md#testing) for the

@@ -356,6 +356,20 @@ public final class McpToolRegistry {
 .enumeration("faceDirection", "Face of the target block to click for place (default: 'up')",
                                 "up", "down", "north", "south", "east", "west")));
 
+        register("farm-plot",
+                "Farming primitive: till farmland with a hoe (grass/dirt → farmland), plant seeds on farmland, "
+                        + "harvest a grown crop (breaking it so drops fall), or fertilize with bone meal. "
+                        + "Auto-equips the required item (hoe, seed item, or bone meal). Verifies by block-state "
+                        + "change and reports the block and crop age found at the position after the action.",
+                objectSchema(schema -> schema
+.required("action")
+.enumeration("action", "Farming action", "till", "plant", "harvest", "fertilize")
+.required("x", "y", "z")
+.number("x", "X coordinate — the block to till, the farmland to plant on, the crop to harvest/fertilize")
+.number("y", "Y coordinate")
+.number("z", "Z coordinate")
+.string("item", "Item to use: hoe for till (default: any hoe in inventory), seed item for plant (required for plant, e.g. wheat_seeds)")));
+
         register("scan-area",
                 "Survey the blocks around the bot: block type counts, hazards (lava, fire, cactus,...), and optional "
                         + "filter matches",

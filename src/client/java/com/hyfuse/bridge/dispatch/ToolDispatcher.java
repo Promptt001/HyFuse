@@ -37,6 +37,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.ItemStackTemplate;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.block.BedBlock;
+import net.minecraft.world.level.block.CropBlock;
+import net.minecraft.world.level.block.FarmlandBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BedPart;
 import net.minecraft.world.level.block.state.properties.Property;
@@ -134,6 +136,7 @@ public final class ToolDispatcher {
                 entry("use-item-on-block", ToolDispatcher::useItemOnBlock),
                 entry("entity-interact", ToolDispatcher::entityInteract),
                 entry("bucket-fluid", ToolDispatcher::bucketFluid),
+                entry("farm-plot", ToolDispatcher::farmPlot),
                 entry("scan-area", ToolDispatcher::scanArea),
 
                 // ── Tier C: Inventory Basics ──
@@ -1616,6 +1619,204 @@ public final class ToolDispatcher {
             }
         }
         return nearest;
+    }
+    /**
+     * farm-plot (T4.8): farming primitive — till farmland with a hoe, plant
+     * seeds on farmland, harvest a grown crop (break + drops), or fertilize
+     * with bonemeal. Auto-equips the needed item (hoe / seeds / bonemeal;
+     * harvest uses the best tool or hand) using the placeBlock-style bounded
+     * hand-wait, then verifies by block-state change after a settle.
+     */
+    private static JsonObject farmPlot(Minecraft client, JsonObject args) {
+        String action = optionalString(args, "action", "till").toLowerCase();
+        int x = requiredInt(args, "x");
+        int y = requiredInt(args, "y");
+        int z = requiredInt(args, "z");
+        BlockPos pos = new BlockPos(x, y, z);
+        ClientLevel level = client.level;
+        LocalPlayer player = client.player;
+
+        String item = optionalString(args, "item", "");
+        BlockState before = level.getBlockState(pos);
+        String beforeName = blockRegistryName(before);
+
+        JsonObject result = new JsonObject();
+        result.addProperty("x", x);
+        result.addProperty("y", y);
+        result.addProperty("z", z);
+        result.addProperty("action", action);
+        result.addProperty("blockBefore", beforeName);
+
+        if (action.equals("till")) {
+            if (before.getBlock() instanceof FarmlandBlock) {
+                result.addProperty("ok", true);
+                result.addProperty("status", "already_farmland");
+                result.addProperty("item", "(held)");
+                result.addProperty("blockAfter", beforeName);
+                return result;
+            }
+            String hoeName = item.isEmpty() ? anyHoeInInventory(client) : item;
+            if (hoeName == null) {
+                result.addProperty("ok", false);
+                result.addProperty("status", "no_hoe");
+                result.addProperty("error", "No hoe in inventory - craft one first (craft-item).");
+                return result;
+            }
+            equipItemByName(client, hoeName);
+            if (!waitForItemInHand(client, hoeName, 2000)) {
+                result.addProperty("ok", false);
+                result.addProperty("status", "no_item_in_hand");
+                result.addProperty("item", hoeName);
+                return result;
+            }
+            result.addProperty("item", hoeName);
+            String r = clickBlockFace(client, player, pos, Direction.UP);
+            result.addProperty("interactionResult", r);
+            settleThenDescribe(client, pos, result);
+            result.addProperty("status", "farmland");
+            if (!(level.getBlockState(pos).getBlock() instanceof FarmlandBlock)) {
+                result.addProperty("status", "not_farmland_after");
+            }
+        } else if (action.equals("plant")) {
+            if (item.isEmpty()) {
+                result.addProperty("ok", false);
+                result.addProperty("status", "no_seed_item");
+                result.addProperty("error", "Provide the seed item name to plant (e.g. wheat_seeds).");
+                return result;
+            }
+            equipItemByName(client, item);
+            if (!waitForItemInHand(client, item, 2000)) {
+                result.addProperty("ok", false);
+                result.addProperty("status", "no_item_in_hand");
+                result.addProperty("item", item);
+                return result;
+            }
+            result.addProperty("item", item);
+            String r = clickBlockFace(client, player, pos, Direction.UP);
+            result.addProperty("interactionResult", r);
+            settleThenDescribe(client, pos, result);
+            String afterName = blockRegistryName(level.getBlockState(pos));
+            result.addProperty("status",
+                    afterName.contains("wheat") || afterName.contains("crop") ? "planted" : "not_planted");
+        } else if (action.equals("harvest")) {
+            String r = breakBlockAt(client, pos, before);
+            result.addProperty("interactionResult", r);
+            result.addProperty("status", "harvested");
+            BlockState after = level.getBlockState(pos);
+            result.addProperty("blockAfter", blockRegistryName(after));
+            if (after.getBlock() instanceof CropBlock crop) {
+                result.addProperty("cropAge", crop.getAge(after));
+                result.addProperty("cropMaxAge", crop.getMaxAge());
+                result.addProperty("cropMaxAgeReached", crop.isMaxAge(after));
+            }
+            result.addProperty("ok", true);
+            return result;
+        } else if (action.equals("fertilize")) {
+            String bmName = "bone_meal";
+            equipItemByName(client, bmName);
+            if (!waitForItemInHand(client, bmName, 2000)) {
+                result.addProperty("ok", false);
+                result.addProperty("status", "no_item_in_hand");
+                result.addProperty("item", bmName);
+                return result;
+            }
+            result.addProperty("item", bmName);
+            String r = clickBlockFace(client, player, pos, Direction.UP);
+            result.addProperty("interactionResult", r);
+            settleThenDescribe(client, pos, result);
+            String afterName = blockRegistryName(level.getBlockState(pos));
+            result.addProperty("status", "fertilized");
+        } else {
+            return errorJson("Unknown action '" + action
+                    + "' - expected till, plant, harvest, or fertilize");
+        }
+        result.addProperty("ok", true);
+        return result;
+    }
+
+    /** Wait (bounded) until the named item is in the main hand; true on success. */
+    private static boolean waitForItemInHand(Minecraft client, String itemName, long timeoutMs) {
+        String desired = simpleName(normalizeResourceId(itemName));
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            ItemStack held = client.player.getMainHandItem();
+            if (!held.isEmpty()
+                    && simpleName(itemRegistryName(held)).equals(desired)) {
+                return true;
+            }
+            try { Thread.sleep(50); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /** Click a block face with the main hand (use-item-on-block core click). */
+    private static String clickBlockFace(Minecraft client, LocalPlayer player,
+                                         BlockPos pos, Direction faceDir) {
+        return callOnClient(client, () -> {
+            lookAtFacePoint(client, pos, faceDir);
+            Vec3 hitVec = facePointHitVec(pos, faceDir);
+            BlockHitResult hitResult = new BlockHitResult(hitVec, faceDir, pos, false);
+            InteractionResult r = client.gameMode.useItemOn(
+                    player, InteractionHand.MAIN_HAND, hitResult);
+            player.swing(InteractionHand.MAIN_HAND);
+            return String.valueOf(r);
+        });
+    }
+
+    /** 150ms settle then record the block at pos into result as blockAfter. */
+    private static void settleThenDescribe(Minecraft client, BlockPos pos, JsonObject result) {
+        try { Thread.sleep(150); } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        BlockState after = client.level.getBlockState(pos);
+        result.addProperty("blockAfter", blockRegistryName(after));
+        if (after.getBlock() instanceof CropBlock crop) {
+            result.addProperty("cropAge", crop.getAge(after));
+            result.addProperty("cropMaxAge", crop.getMaxAge());
+            result.addProperty("cropMaxAgeReached", crop.isMaxAge(after));
+        }
+    }
+
+    /** Any hoe in the inventory (registry name), or null when none. */
+    private static String anyHoeInInventory(Minecraft client) {
+        for (int i = 0; i < 9; i++) {
+            ItemStack st = client.player.getInventory().getItem(i);
+            if (!st.isEmpty() && simpleName(itemRegistryName(st)).contains("hoe")) {
+                return itemRegistryName(st);
+            }
+        }
+        return null;
+    }
+
+    /** Break the block at pos (digBlock core, without auto-tool). Returns "broken". */
+    private static String breakBlockAt(Minecraft client, BlockPos pos, BlockState state) {
+        LocalPlayer player = client.player;
+        ClientLevel level = client.level;
+        Direction face = computeFaceTowards(player, pos);
+        lookAtBlockCenter(client, pos);
+        long deadline = System.currentTimeMillis() + 25000;
+        if (player.isCreative()) {
+            client.gameMode.destroyBlock(pos);
+        } else {
+            client.gameMode.startDestroyBlock(pos, face);
+            player.swing(InteractionHand.MAIN_HAND);
+            while (!level.getBlockState(pos).isAir() && System.currentTimeMillis() < deadline) {
+                client.gameMode.continueDestroyBlock(pos, face);
+                player.swing(InteractionHand.MAIN_HAND);
+                try { Thread.sleep(50); } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            if (!level.getBlockState(pos).isAir()) {
+                client.gameMode.stopDestroyBlock();
+                return "timeout";
+            }
+        }
+        return "broken";
     }
     private static JsonObject placeBlock(Minecraft client, JsonObject args) {
         int x = requiredInt(args, "x");
