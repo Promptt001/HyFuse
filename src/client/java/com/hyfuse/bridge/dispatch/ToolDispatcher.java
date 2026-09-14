@@ -288,10 +288,25 @@ public final class ToolDispatcher {
         caps.addProperty("queueProcess", true); // enqueue-tasks linear queue
         caps.addProperty("standingProcesses", true); // Supervisor + cycle serialization
 
+        // T4.2 presence keys — runtime mod presence (not feature flags),
+        // consulted by AgentLoop's Ring-2 gating (docs/AGENT_TOOLSET.md).
+        caps.addProperty("meteorPresent", classExists("meteordevelopment.meteorclient.systems.Systems"));
+        caps.addProperty("baritonePresent", classExists("baritone.api.BaritoneAPI"));
+
         JsonObject result = new JsonObject();
         result.addProperty("status", "ok");
         result.add("capabilities", caps);
         return result;
+    }
+
+    /** True when the named class is on the classpath (mod presence probe). */
+    private static boolean classExists(String className) {
+        try {
+            Class.forName(className);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** get-events: poll-and-drain of the shared EventBuffer with optional filter/sinceVersion. */

@@ -14,7 +14,10 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
@@ -206,12 +209,16 @@ public final class AgentLoop {
                 + "\n\n## Goal\n" + goal
                 + "\n\n## Directive\n"
                 + "Decompose this goal into a series of tasks. Work through them using tools."
+                + " Many tools are intentionally hidden from you. If a task seems"
+                + " impossible with your toolset, find another way — never assume a"
+                + " missing tool exists."
                 + " The final task must have the player return to a safe standby holding"
                 + " position (well-lit, no hostile mobs nearby, not drowning)."
-                + "\nMOVEMENT: travel is Baritone-only (goto-coords / navigate-v2) for"
-                + " anything beyond ~4 blocks. Manual move-in-direction walking is"
+                + "\nMOVEMENT: travel is Baritone-only (goto-coords) for"
+                + " anything beyond ~4 blocks. Manual steering is"
                 + " forbidden except ≤4-block adjustments — it is jerky, slow, and"
-                + " burns iterations. Issue ONE goto, then wait on standing-status,"
+                + " burns iterations. Issue ONE goto, then poll get-agent-snapshot"
+                + " or get-events to track progress, never step-by-step."
                 + " never step-by-step."
                 + " When the goal is met and the player is at the standby position,"
                 + " reply with a summary and no tool calls.";
@@ -219,6 +226,7 @@ public final class AgentLoop {
 
     /** One ask-parse-dispatch-respond round. Visible for the smoke suite. */
     public Iteration oneIteration(int index) throws Exception {
+        refreshCapabilityPresence();
         JsonObject request = new JsonObject();
         request.addProperty("model", model);
         request.add("messages", messagesForApi(history));
@@ -299,10 +307,74 @@ public final class AgentLoop {
         if (model != null && !model.isBlank()) this.model = model;
     }
 
-    /** Tools list for the API: name + description + JSON Schema params. */
+    // ── Agent toolset (T4.2, docs/AGENT_TOOLSET.md) ──────────────────
+    // Ring 1: lean deliberative surface. The full 79-tool registry stays
+    // on the MCP/OpenAPI operator doors — this filter only shapes what the
+    // LLM sees. Research: selection accuracy degrades past 15–20 tools.
+    static final Set<String> AGENT_TOOLS = Set.of(
+            "get-agent-snapshot", "get-events", "find-blocks",
+            "goto-coords", "recover-stuck",
+            "mine-blocks", "dig-block", "place-block", "attack-entity",
+            "collect-drops", "eat-food",
+            "craft-item", "can-craft", "smelt-item",
+            "list-inventory", "auto-equip-best-gear", "deposit-items",
+            "memory-save", "memory-read", "policy-save", "standing-start",
+            "get-capabilities", "enqueue-tasks", "cancel-current-action");
+
+    // Ring 2: exposed only when the capability key reads true from
+    // get-capabilities; absent/false keys keep the tool hidden.
+    static final Map<String, String> RING2_GATES = Map.of(
+            "toggle-meteor-module", "meteorPresent",
+            "list-meteor-modules", "meteorPresent",
+            "set-meteor-keybind", "meteorPresent",
+            "guard-area", "guardProcess",
+            "flee-from", "baritonePresent",
+            "explore", "baritonePresent",
+            "follow-player", "baritonePresent",
+            "fly-to", "baritonePresent",
+            "scan-nearby-entities", "worldCache",
+            "find-ore-veins", "worldCache");
+
+    /** Presence snapshot consulted by toolsForApi for Ring-2 gating. */
+    static volatile Map<String, Boolean> capabilityPresence = Map.of();
+
+    /** Ring-2 admission: gated tool + its capability key reads true. */
+    static boolean ring2Admitted(String toolName) {
+        String gate = RING2_GATES.get(toolName);
+        return gate != null && Boolean.TRUE.equals(capabilityPresence.get(gate));
+    }
+
+    /**
+     * Refresh the capability-presence snapshot via get-capabilities.
+     * Called once per iteration before building the request; failures
+     * leave the previous snapshot in place (never block the loop).
+     */
+    void refreshCapabilityPresence() {
+        try {
+            JsonObject result = dispatchTool("get-capabilities", new JsonObject());
+            if (result != null && result.has("capabilities")) {
+                Map<String, Boolean> presence = new HashMap<>();
+                for (var e : result.getAsJsonObject("capabilities").entrySet()) {
+                    try {
+                        presence.put(e.getKey(), e.getValue().getAsBoolean());
+                    } catch (ClassCastException ignored) {
+                        presence.put(e.getKey(), false);
+                    }
+                }
+                capabilityPresence = presence;
+            }
+        } catch (Exception ignored) {
+            // keep the last known snapshot; Ring-2 stays hidden on failure
+        }
+    }
+
+    /** Tools list for the API: Ring-1 + capability-gated Ring-2. */
     static JsonArray toolsForApi() {
         JsonArray tools = new JsonArray();
         for (McpToolRegistry.Tool tool : McpToolRegistry.tools()) {
+            boolean ring1 = AGENT_TOOLS.contains(tool.name());
+            boolean ring2 = ring2Admitted(tool.name());
+            if (!ring1 && !ring2) continue;
             JsonObject t = new JsonObject();
             t.addProperty("type", "function");
             JsonObject fn = new JsonObject();

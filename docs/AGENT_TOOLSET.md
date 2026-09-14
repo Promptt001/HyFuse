@@ -1,166 +1,92 @@
 # HyFuse Agent Toolset Manifest (Tier-1)
 
-> **Status:** PROPOSAL — awaiting operator sign-off before AgentLoop implements it.
-> **Purpose:** define exactly which of the 79 registered tools the *embedded
-> agent loop* (`AgentLoop` → `toolsForApi()`) exposes to the LLM. The full
-> 79-tool surface remains untouched on the MCP and OpenAPI doors (operator
-> surface). This is the "routing layer" answer to the over-tooled-agent
-> problem: research shows selection accuracy degrades measurably past
-> 15–20 tools; HyFuse currently sends all 79 unfiltered.
+> **Status:** RATIFIED — lean set (operator 2026-09-14), trimmed from 41 → 24
+> to sit near the 15–20 accuracy band. Implemented in `AgentLoop` (T4.2).
+> The full 79-tool registry stays untouched on the MCP/OpenAPI doors
+> (operator surface). Selection accuracy degrades measurably past 15–20
+> tools; HyFuse previously sent all 79 unfiltered.
 >
 > **Rule of thumb:** the agent gets the **deliberative** surface. Reflexes
 > (policies), repetition (standing processes), and manual real-time control
-> (steering primitives) are deliberately *not* the LLM's job — they are
-> either background machinery or operator/Baritone territory.
+> are deliberately *not* the LLM's job.
 
-## Ring 1 — Core agent set (default exposure)
+## Ring 1 — Lean agent set (24 tools, default exposure)
 
-The day-1 → month-1 survival loop, validated by the new-player thought
-exercise (see HANDOVER §18). Every tool here earns its slot through a
-concrete recurring goal-task.
-
-### Sense & orient (5)
-| Tool | Earns its slot by |
-|---|---|
-| `get-agent-snapshot` | The one-call brain refresh; absorbs position/vitals/inventory/mobs/time/weather |
-| `get-events` | Reactive attention: damage, spawns, weather the snapshot missed |
-| `find-blocks` | Target acquisition for nearly every gather task |
-| `find-ore-veins` | Mining economy: grouped veins with exposure info |
-| `scan-nearby-entities` | Threat/food/target assessment |
+### Sense & orient (3)
+- `get-agent-snapshot` — one-call brain refresh; absorbs 4 standalone tools
+- `get-events` — reactive attention (damage/spawns/oxygen)
+- `find-blocks` — target acquisition for nearly every gather task
 
 ### Navigate (2)
-| Tool | Earns its slot by |
-|---|---|
-| `goto-coords` | **The** travel verb — Baritone `#goto` + arrival gate. Blessed by the goal-seed MOVEMENT directive |
-| `recover-stuck` | The reflex the agent may invoke itself when boxed in |
+- `goto-coords` — the sole blessed travel verb (Baritone #goto + arrival gate)
+- `recover-stuck` — the reflex the agent may invoke itself when boxed in
 
-**Deliberately ONE nav verb.** `navigate-v2` (profiles, goal taxonomy,
-stall detection) stays operator-only. The goal seed should teach
-`goto-coords` alone; `navigate-v2`'s knobs are tuning, not deliberation.
+### Act on the world (6)
+- `mine-blocks` — bulk gather backbone
+- `dig-block` — single-block precision (shelter, clearance)
+- `place-block` — building primitive (materialPalette substitution)
+- `attack-entity` — hunting/threat removal (kills but never picks up)
+- `collect-drops` — turns kills/mines into inventory (load-bearing)
+- `eat-food` — hunger reflex triggered deliberately
 
-### Act on the world (9)
-| Tool | Earns its slot by |
-|---|---|
-| `get-to-block` | Walk-to-target-block as a background process |
-| `mine-blocks` | Bulk gather — the backbone of every resource goal |
-| `dig-block` | Single-block precision work (shelter, clearance) |
-| `place-block` | Building primitive (materialPalette handles substitution) |
-| `build-structure` | Project-scale construction from blueprints |
-| `attack-entity` | Hunting/threat removal (best-weapon auto-equip) |
-| `collect-drops` | Turning kills/mines into inventory |
-| `eat-food` | Hunger reflex the agent triggers deliberately |
-| `sleep-in-bed` | Night skip — a whole day-1 goal in one call |
+### Craft & process (3)
+- `craft-item` — the make verb
+- `can-craft` — pre-flight check, avoids wasted iterations
+- `smelt-item` — ore→ingot, required by the iron/diamond loop
 
-### Craft & process (4)
-| Tool | Earns its slot by |
-|---|---|
-| `craft-item` | The make verb |
-| `can-craft` | Pre-flight check; avoids wasted-craft iterations |
-| `craft-with-deps` | Recipe-tree understanding for multi-step crafting |
-| `smelt-item` | Ore → ingot; required by the iron/diamond loop |
+### Inventory & gear (3)
+- `list-inventory` — what do I have (post-gather, pre-craft)
+- `auto-equip-best-gear` — one-call gear-up after tier upgrades
+- `deposit-items` — haul-home-and-store half of the mining loop
 
-### Inventory & gear (6)
-| Tool | Earns its slot by |
-|---|---|
-| `list-inventory` | What do I have (post-gather, pre-craft) |
-| `auto-equip-best-gear` | One-call gear-up after tier upgrades |
-| `equip-item` | Deliberate tool/weapon selection |
-| `open-container` | Base storage access |
-| `deposit-items` | Haul-home-and-store half of the mining loop |
-| `withdraw-items` | Retrieve half |
+### Autonomy & memory (4)
+- `memory-save` / `memory-read` — persistent facts (base, hazards, waypoints)
+- `policy-save` — install-a-reflex; shrinks future deliberation
+- `standing-start` — run goal cycles without LLM round-trips
 
-### Autonomy & memory (10)
-| Tool | Earns its slot by |
-|---|---|
-| `memory-save` / `memory-read` | Persistent facts (base, hazards, waypoints) |
-| `journal-read` / `journal-append` | Session continuity, §8 plans, §9 event log |
-| `get-playbook` | Re-read the rules when unsure |
-| `policy-save` / `policy-read` | **Install a reflex** — shrink future deliberation |
-| `standing-start` / `standing-status` | Run goal cycles without LLM round-trips |
-| `get-capabilities` | Startup self-model (also drives gating, below) |
+### Supervision & meta (3)
+- `get-capabilities` — startup self-model; drives Ring-2 gating
+- `enqueue-tasks` — linear multi-step plans
+- `cancel-current-action` — the agent's own abort switch
 
-### Supervision & meta (5)
-| Tool | Earns its slot by |
-|---|---|
-| `get-current-action` | Watch a running composite |
-| `cancel-current-action` | The agent's own abort switch |
-| `enqueue-tasks` | Linear multi-step plans |
-| `agent-status` | Self-observation for the loop |
-| `get-last-death` | DeathMemory: don't die to the same ravine twice |
-
-**Ring 1 total: 41** — still above the 15–20 comfort band, but every entry
-is load-bearing for the survival loop; further cuts would remove real
-capability, not distractors. (Sensing composites could eventually shrink
-this: e.g. if `scan-nearby-entities`+`find-blocks` merged into snapshot
-follow-ups.)
+**First re-add candidates** (when usage data justifies): `journal-append`
+(session continuity), `sleep-in-bed` (night skip), `craft-with-deps`
+(recipe trees), `withdraw-items`, `standing-status`.
 
 ## Ring 2 — Conditional (exposed only when a capability is true)
 
 | Tool | Gate (new capability key) |
 |---|---|
-| `toggle-meteor-module`, `list-meteor-modules`, `set-meteor-keybind` | `meteorPresent` (Meteor Client loaded) |
-| `guard-area` | `guardProcess` AND (`meteorPresent` OR accept melee-only guarding) |
-| `flee-from` | `baritonePresent` |
-| `explore`, `follow-player`, `fly-to` | `baritonePresent` (movement composites) |
+| `toggle-meteor-module`, `list-meteor-modules`, `set-meteor-keybind` | `meteorPresent` |
+| `guard-area` | `guardProcess` (melee fallback works without Meteor) |
+| `flee-from`, `explore`, `follow-player`, `fly-to` | `baritonePresent` |
+| `scan-nearby-entities`, `find-ore-veins` | `worldCache` (sensing gates) |
 
-Note: `get-capabilities` today reports *feature flags*, not *runtime
-presence*. Task-2 implementation adds presence keys (`meteorPresent`,
-`baritonePresent`) to that map; the filter consults them, and the agent's
-startup `get-capabilities` call doubles as discovery.
+`get-capabilities` gains presence keys `meteorPresent` / `baritonePresent`
+(T4.2); the filter consults them and the agent's startup capabilities call
+doubles as discovery. Capabilities map changes are additive — no count pin
+exists there, so no Smoke2 change is needed.
 
-## Anti-list — never exposed to the agent loop (30, verified)
+## Anti-list — never exposed to the agent loop
 
-Grouped by reason; **none are deleted** — all remain on the MCP/OpenAPI
-operator doors.
+The trimmed-out tools join the anti-list *for the agent persona*; all remain
+fully available on the MCP/OpenAPI operator doors (79-tool pin intact).
 
-- **Eaten by composites:** `get-world-time`, `get-weather`, `get-block-light`,
-  `detect-gamemode` (snapshot covers time/weather/light context; gamemode is
-  a one-time operator curiosity)
-- **Manual real-time steering — LLMs are bad at this, Baritone is better:**
-  `move-in-direction`, `look-at`, `raycast-look`, `path-safely`,
-  `set-movement-profile`
-- **Duplicate nav/follow verbs:** `navigate-v2`, `follow-entity`,
-  `find-safe-location` (reflex territory: policies + `goto-coords` away)
-- **Rare deliberate surveys = operator diagnostics:** `get-block-info`,
-  `get-blocks`, `scan-area`, `scan-volume`, `find-entity`, `find-item`
-- **Inventory micro-management = operator/troubleshooting:**
-  `move-item`, `organize-inventory`, `resolve-material`
-- **Reflex/install-once machinery:** `escape-water` (auto + policy),
-  `policy-forget`, `standing-stop` (handled via `standing-status` +
-  supervisor; keep the operator door)
+- **Eaten by composites:** `get-world-time`, `get-weather`, `get-block-light`, `detect-gamemode`
+- **Manual real-time steering (LLM-inappropriate, Baritone better):** `move-in-direction`, `look-at`, `raycast-look`, `path-safely`, `set-movement-profile`
+- **Duplicate nav/follow verbs:** `navigate-v2`, `follow-entity`, `find-safe-location`
+- **Rare deliberate surveys / operator diagnostics:** `get-block-info`, `get-blocks`, `scan-area`, `scan-volume`, `find-entity`, `find-item`
+- **Inventory micro-management:** `move-item`, `organize-inventory`, `resolve-material`, `equip-item`, `open-container`, `withdraw-items`
+- **Reflex/install-once machinery:** `escape-water`, `place-torch`, `sleep-in-bed`, `standing-stop`, `standing-status`, `policy-forget`
 - **Social/chat — trust boundary (playbook §2):** `send-chat`, `read-chat`
-- **Operator-only lifecycle:** `agent-start`, `agent-stop` — the operator's
-  reins on the loop itself (never let the agent turn itself off-and-on or
-  spawn loops)
-- **Destructive-forget primitives:** `memory-forget`, `policy-forget`,
-  `standing-stop` (operator-gated; agent uses `standing-status` and the
-  supervisor instead)
-- **Misc operator conveniences:** `place-torch` (place-block + materialPalette
-  covers it), `resolve-material` (place-block does this internally)
-
-Verified membership (79 = 41 + 8 + 30): `get-block-info`, `get-blocks`,
-`get-block-light`, `scan-area`, `scan-volume`, `raycast-look`,
-`find-entity`, `get-world-time`, `get-weather`, `detect-gamemode`,
-`navigate-v2`, `path-safely`, `find-safe-location`, `follow-entity`,
-`move-in-direction`, `escape-water`, `set-movement-profile`, `look-at`,
-`place-torch`, `resolve-material`, `find-item`, `move-item`,
-`organize-inventory`, `standing-stop`, `memory-forget`, `policy-forget`,
-`agent-start`, `agent-stop`, `send-chat`, `read-chat`.
-
-## Prompt contract changes (for task 2)
-
-1. Goal-seed MOVEMENT directive names **`goto-coords` only** (drop
-   `/ navigate-v2`).
-2. Seed adds: "Many tools are intentionally hidden from you. If a task seems
-   impossible with your toolset, achieve it differently — never assume a
-   missing tool exists."
-3. `toolsForApi()` = Ring 1 ∪ gated Ring 2, order stable (registry order),
-   so token cost and prompt layout are deterministic.
+- **Operator-only lifecycle:** `agent-start`, `agent-stop`
+- **Destructive-forget primitives:** `memory-forget`
+- **Deferred pending usage data:** `journal-read`, `journal-append`, `get-playbook`, `craft-with-deps`, `get-current-action`, `agent-status`, `get-last-death`, `standing-status` (re-add candidates above)
 
 ## Governance
 
-- This manifest is **hand-maintained** (unlike TOOL_CATALOG) — it is policy,
-  not generated structure. Changes require: update this doc → update the
-  AgentLoop filter constant → `AgentLoopTest` pins the new set → 11/11 gate.
-- The 79-tool MCP/OpenAPI pin (§7 invariant 1) is **untouched** by all of
-  this; `Smoke2`/`OpenApiTest` keep guarding the operator surface.
+- Hand-maintained policy doc (unlike TOOL_CATALOG). Changes require: update
+  this doc → update the `AGENT_TOOLS` constant in `AgentLoop.java` →
+  `AgentLoopTest` pins the set → 11/11 gate.
+- The 79-tool MCP/OpenAPI pin (§7 invariant 1) is untouched; `Smoke2` /
+  `OpenApiTest` keep guarding the operator surface.
