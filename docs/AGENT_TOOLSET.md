@@ -2,7 +2,7 @@
 
 > **Status:** RATIFIED — lean set (operator 2026-09-14), trimmed from 41 → 24
 > to sit near the 15–20 accuracy band. Implemented in `AgentLoop` (T4.2).
-> The full registry (now 83 tools) stays untouched on the MCP/OpenAPI doors
+> The full registry (now 84 tools) stays untouched on the MCP/OpenAPI doors
 > (operator surface). Selection accuracy degrades measurably past 15–20
 > tools; HyFuse previously sent all 79 unfiltered.
 >
@@ -10,7 +10,7 @@
 > (policies), repetition (standing processes), and manual real-time control
 > are deliberately *not* the LLM's job.
 
-## Ring 1 — Lean agent set (33 tools, default exposure)
+## Ring 1 — Lean agent set (34 tools, default exposure)
 
 ### Sense & orient (3)
 - `get-agent-snapshot` — one-call brain refresh; absorbs 4 standalone tools
@@ -21,7 +21,7 @@
 - `goto-coords` — the sole blessed travel verb (Baritone #goto + arrival gate)
 - `recover-stuck` — the reflex the agent may invoke itself when boxed in
 
-### Act on the world (10)
+### Act on the world (11)
 - `mine-blocks` — bulk gather backbone
 - `dig-block` — single-block precision (shelter, clearance)
 - `place-block` — building primitive (materialPalette substitution)
@@ -29,6 +29,7 @@
 - `entity-interact` — entity right-click: breed/tame/lead/trade (T4.5)
 - `bucket-fluid` — water/lava/powder-snow: fill or place (T4.6)
 - `farm-plot` — till/plant/harvest/fertilize crops (T4.8)
+- `villager-trade` — list offers + execute trades (T4.10)
 - `collect-drops` — turns kills/mines into inventory (load-bearing)
 - `eat-food` — hunger reflex triggered deliberately
 - `sleep-in-bed` — skip the night, reset spawn (T4.9 re-add)
@@ -78,7 +79,7 @@ exists there, so no Smoke2 change is needed.
 ## Anti-list — never exposed to the agent loop
 
 The trimmed-out tools join the anti-list *for the agent persona*; all remain
-fully available on the MCP/OpenAPI operator doors (83-tool pin intact).
+fully available on the MCP/OpenAPI operator doors (84-tool pin intact).
 
 - **Eaten by composites:** `get-world-time`, `get-weather`, `get-block-light`, `detect-gamemode`
 - **Manual real-time steering (LLM-inappropriate, Baritone better):** `move-in-direction`, `look-at`, `raycast-look`, `path-safely`, `set-movement-profile`
@@ -96,5 +97,5 @@ fully available on the MCP/OpenAPI operator doors (83-tool pin intact).
 - Hand-maintained policy doc (unlike TOOL_CATALOG). Changes require: update
   this doc → update the `AGENT_TOOLS` constant in `AgentLoop.java` →
   `AgentLoopTest` pins the set → 11/11 gate.
-- The 83-tool MCP/OpenAPI pin (§7 invariant 1) is untouched; `Smoke2` /
+- The 84-tool MCP/OpenAPI pin (§7 invariant 1) is untouched; `Smoke2` /
   `OpenApiTest` keep guarding the operator surface.

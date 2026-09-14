@@ -67,6 +67,11 @@ import net.minecraft.world.entity.player.StackedItemContents;
 import net.minecraft.client.ClientRecipeBook;
 import net.minecraft.client.gui.screens.recipebook.RecipeCollection;
 import net.minecraft.world.inventory.ContainerInput;
+import net.minecraft.world.inventory.MerchantMenu;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.item.trading.MerchantOffers;
+import net.minecraft.world.item.trading.MerchantOffer;
+import net.minecraft.world.entity.npc.villager.AbstractVillager;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.Item;
 import net.minecraft.core.Holder;
@@ -137,6 +142,7 @@ public final class ToolDispatcher {
                 entry("entity-interact", ToolDispatcher::entityInteract),
                 entry("bucket-fluid", ToolDispatcher::bucketFluid),
                 entry("farm-plot", ToolDispatcher::farmPlot),
+                entry("villager-trade", ToolDispatcher::villagerTrade),
                 entry("scan-area", ToolDispatcher::scanArea),
 
                 // ── Tier C: Inventory Basics ──
@@ -1817,6 +1823,218 @@ public final class ToolDispatcher {
             }
         }
         return "broken";
+    }
+    /**
+     * villager-trade (T4.10): trade with a villager / wandering trader.
+     * Resolves the merchant (entityId or name), opens the trade screen by
+     * right-clicking it, waits for the MerchantMenu to open, then either
+     * lists offers (action=list) or executes a trade (action=trade): select
+     * the offer via setSelectionHint + handleInventoryButtonClick, move the
+     * payment items into PAYMENT slots 0/1 (ContainerInput.SWAP), and take
+     * the result from RESULT slot 2 (QUICK_MOVE). Verifies by result-stack
+     * pickup and reports the offer list / traded items.
+     */
+    private static JsonObject villagerTrade(Minecraft client, JsonObject args) {
+        String action = optionalString(args, "action", "list").toLowerCase();
+        String entityName = optionalString(args, "entityName", "");
+        int entityId = optionalInt(args, "entityId", -1);
+        if (entityName.isEmpty() && entityId < 0) {
+            return errorJson("Provide entityName or entityId");
+        }
+        LocalPlayer player = client.player;
+        ClientLevel level = client.level;
+
+        // Resolve the merchant entity (same resolution as entity-interact).
+        Entity merchant = null;
+        if (entityId >= 0) {
+            int id = entityId;
+            merchant = callOnClient(client, () -> level.getEntity(id));
+        }
+        if (merchant == null && !entityName.isEmpty()) {
+            merchant = callOnClient(client, () ->
+                    resolveAttackTarget(level, player, entityName));
+        }
+        if (merchant == null) {
+            return errorJson("No entity matching "
+                    + (entityName.isEmpty() ? ("id " + entityId) : ("'" + entityName + "'"))
+                    + " found nearby");
+        }
+        if (!(merchant instanceof AbstractVillager villager)) {
+            return errorJson("Entity is not a villager/trader: "
+                    + entityRegistryName(merchant));
+        }
+
+        JsonObject result = new JsonObject();
+        result.addProperty("merchant", entityRegistryName(merchant));
+        result.addProperty("action", action);
+
+        // Open the trade screen by right-clicking the villager (no item).
+        if (callOnClient(client, () -> client.player.containerMenu.containerId) != 0) {
+            closeContainer(client);
+        }
+        final Entity target = merchant;
+        InteractionResult openResult = callOnClient(client, () -> {
+            lookAtEntity(client, target);
+            return client.gameMode.interact(player, target,
+                    new EntityHitResult(target), InteractionHand.MAIN_HAND);
+        });
+        player.swing(InteractionHand.MAIN_HAND);
+        result.addProperty("interactResult", String.valueOf(openResult));
+
+        // Wait (bounded) for the MerchantMenu to open.
+        long deadline = System.currentTimeMillis() + 2000;
+        AbstractContainerMenu menu = null;
+        while (System.currentTimeMillis() < deadline) {
+            AbstractContainerMenu current = client.player.containerMenu;
+            if (current != null && current instanceof MerchantMenu) {
+                menu = current;
+                break;
+    }
+            try { Thread.sleep(50); } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+        if (menu == null) {
+            result.addProperty("ok", false);
+            result.addProperty("status", "no_trade_screen");
+            result.addProperty("error", "Trade screen did not open - villager may be busy or trading locked.");
+            return result;
+        }
+        MerchantMenu merchantMenu = (MerchantMenu) menu;
+        int containerId = merchantMenu.containerId;
+
+        // Offers snapshot (list from the menu, which mirrors server offers).
+        MerchantOffers offers = callOnClient(client, () -> villager.getOffers());
+        if (offers == null || offers.isEmpty()) {
+            result.addProperty("ok", false);
+            result.addProperty("screenOpened", true);
+            result.addProperty("status", "no_offers");
+            result.addProperty("error", "Villager has no trade offers.");
+            closeContainer(client);
+            return result;
+        }
+        JsonArray offersJson = new JsonArray();
+        int idx = 0;
+        for (MerchantOffer offer : offers) {
+            JsonObject o = new JsonObject();
+            o.addProperty("index", idx);
+            o.addProperty("costA", itemRegistryName(offer.getCostA()));
+            o.addProperty("costACount", offer.getCostA().getCount());
+            o.addProperty("costB", offer.getCostB().isEmpty()
+                    ? "" : itemRegistryName(offer.getCostB()));
+            o.addProperty("costBCount", offer.getCostB().getCount());
+            o.addProperty("result", itemRegistryName(offer.getResult()));
+            o.addProperty("resultCount", offer.getResult().getCount());
+            o.addProperty("outOfStock", offer.isOutOfStock());
+            idx++;
+            offersJson.add(o);
+        }
+        result.add("offers", offersJson);
+        result.addProperty("offerCount", offers.size());
+        if (action.equals("list")) {
+            result.addProperty("ok", true);
+            result.addProperty("status", "listed");
+            closeContainer(client);
+            return result;
+        }
+
+        if (!action.equals("trade")) {
+            closeContainer(client);
+            return errorJson("Unknown action '" + action + "' - expected list or trade");
+        }
+        int tradeIndex = optionalInt(args, "tradeIndex", -1);
+        if (tradeIndex < 0 || tradeIndex >= offers.size()) {
+            closeContainer(client);
+            return errorJson("Invalid tradeIndex " + tradeIndex
+                    + " - must be 0.." + (offers.size() - 1));
+        }
+        MerchantOffer offer = offers.get(tradeIndex);
+        if (offer.isOutOfStock()) {
+            closeContainer(client);
+            result.addProperty("ok", false);
+            result.addProperty("status", "out_of_stock");
+            return result;
+        }
+
+        // Select the trade, then move payment into PAYMENT1 slot 0.
+        callOnClient(client, () -> {
+            merchantMenu.setSelectionHint(tradeIndex);
+            return true;
+        });
+        client.gameMode.handleInventoryButtonClick(containerId, tradeIndex);
+        try { Thread.sleep(150); } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Pay: swap payment items from the player inventory into PAYMENT slots.
+        // PAYMENT1 = slot 0, PAYMENT2 = slot 1 (only when costB present).
+        String costAName = itemRegistryName(offer.getCostA());
+        int costACount = offer.getCostA().getCount();
+        movedIntoPaymentSlot(client, containerId, 0, costAName, costACount);
+        if (!offer.getCostB().isEmpty()) {
+            String costBName = itemRegistryName(offer.getCostB());
+            int costBCount = offer.getCostB().getCount();
+            movedIntoPaymentSlot(client, containerId, 1, costBName, costBCount);
+        }
+        try { Thread.sleep(150); } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Take the result: QUICK_MOVE from RESULT slot 2 into inventory.
+        ItemStack before = callOnClient(client, () ->
+                client.player.containerMenu.getSlot(2).getItem().copy());
+        client.gameMode.handleContainerInput(containerId, 2, 0,
+                net.minecraft.world.inventory.ContainerInput.QUICK_MOVE, client.player);
+        try { Thread.sleep(150); } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        ItemStack after = callOnClient(client, () ->
+                client.player.containerMenu.getSlot(2).getItem().copy());
+
+        result.addProperty("tradeIndex", tradeIndex);
+        result.addProperty("costA", costAName);
+        result.addProperty("costACount", costACount);
+        if (!offer.getCostB().isEmpty()) {
+            result.addProperty("costB", itemRegistryName(offer.getCostB()));
+            result.addProperty("costBCount", offer.getCostB().getCount());
+        }
+        result.addProperty("resultItem", itemRegistryName(offer.getResult()));
+        boolean taken = after.isEmpty() && !before.isEmpty();
+        result.addProperty("ok", taken);
+        result.addProperty("status", taken ? "traded" : "not_traded");
+        if (!taken) {
+            result.addProperty("error", "Result slot did not clear - payment may be "
+                    + "insufficient (check cost counts) or trade locked.");
+        }
+        closeContainer(client);
+        return result;
+    }
+
+    /** Move payment items from player inventory into a MerchantMenu payment slot. */
+    private static void movedIntoPaymentSlot(Minecraft client, int containerId,
+                                              int paymentSlot, String itemName, int count) {
+        Inventory inv = client.player.getInventory();
+        int remaining = count;
+        // First try hotbar + main inventory; SWAP whole stacks into the slot.
+        for (int pass = 0; pass < 2 && remaining > 0; pass++) {
+            int from = pass == 0 ? 0 : 9;
+            int to = pass == 0 ? 9 : inv.getContainerSize();
+            for (int i = from; i < to && remaining > 0; i++) {
+                ItemStack st = inv.getItem(i);
+                if (st.isEmpty()) continue;
+                if (!itemRegistryName(st).equals(itemName)) continue;
+                int windowSlot = invSlotToWindow(i);
+                client.gameMode.handleContainerInput(
+                        containerId, windowSlot, paymentSlot,
+                        net.minecraft.world.inventory.ContainerInput.SWAP, client.player);
+                remaining -= st.getCount();
+                try { Thread.sleep(50); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
     }
     private static JsonObject placeBlock(Minecraft client, JsonObject args) {
         int x = requiredInt(args, "x");

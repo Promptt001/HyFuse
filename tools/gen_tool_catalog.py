@@ -39,7 +39,7 @@ CATEGORIES = [
     ("Combat & survival", "combat--survival",
      "Threat response. Doctrine: Meteor KillAura for combat when present, "
      "built-in handlers otherwise; Baritone for positioning.",
-     ["attack-entity", "entity-interact", "guard-area", "flee-from", "toggle-meteor-module",
+     ["attack-entity", "entity-interact", "villager-trade", "guard-area", "flee-from", "toggle-meteor-module",
       "set-meteor-keybind", "list-meteor-modules", "auto-equip-best-gear"]),
     ("Inventory & containers", "inventory--containers",
      "Item management: self-inventory, chests and barrels, and honest move "

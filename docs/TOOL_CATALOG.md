@@ -1,6 +1,6 @@
 # HyFuse Tool Catalog
 
-> All **83 tools** of the HyFuse MCP surface, generated directly from
+> All **84 tools** of the HyFuse MCP surface, generated directly from
 > `McpToolRegistry.java` by `tools/gen_tool_catalog.py` — this file never
 > drifts from the code. Each entry: what it does, its arguments, and when
 > an agent should reach for it.
@@ -87,6 +87,7 @@ Threat response. Doctrine: Meteor KillAura for combat when present, built-in han
 |---|---|---|
 | [`attack-entity`](#attack-entity) | `entityName` <sub>string</sub>, `strategy` <sub>enum</sub>, `timeoutMs` <sub>int</sub> | Attack a target entity. Equips the best weapon and fights until the target dies, disappears, or the timeout expires. Strategies: 'melee' (chase and hit), 'ranged' (bow, keeps distance), 'hit_and_retreat' (strike then back off — good at low health). |
 | [`entity-interact`](#entity-interact) | `entityName` <sub>string</sub>, `entityId` <sub>int</sub>, `item` <sub>string</sub>, `attempts` <sub>int</sub> | Right-click interaction primitive for entities: hold an item (optional, auto-equipped when named) and use it on a nearby entity. Covers breeding (wheat on cows/sheep), taming (bones on wolves), leading (lead), villager trading, and general entity right-clicks. Resolves the target by numeric id… |
+| [`villager-trade`](#villager-trade) | `action` <sub>enum</sub>, `entityName` <sub>string</sub>, `entityId` <sub>int</sub>, `tradeIndex` <sub>int</sub> | Trade with a villager or wandering trader. Right-click opens the trade screen, then either list the offers (action=list, reports cost/result/out-of-stock per offer) or execute a trade (action=trade + tradeIndex): selects the offer, moves the payment items into the payment slots, and takes the… |
 | [`guard-area`](#guard-area) | `x` <sub>number</sub>, `y` <sub>number</sub>, `z` <sub>number</sub>, `radius` <sub>number</sub>, `strategy` <sub>enum</sub>, `maxDurationMs` <sub>int</sub> | Guard an area as a background process: holds a post within the radius, melee-attacks hostiles that enter the radius (KillAura-led with melee fallback in the Fabric body), then returns to the post. `strategy:'ranged'` is deferred (melee first). Returns {ok, threatsEngaged, attacks,… |
 | [`flee-from`](#flee-from) | `fromType` <sub>string</sub>, `minDistance` <sub>number</sub>, `timeoutMs` <sub>int</sub> | Sprint away from a threat ('nearest_hostile' or a specific mob name) until a minimum distance is reached |
 | [`toggle-meteor-module`](#toggle-meteor-module) | `module` <sub>string</sub>, `action` <sub>enum</sub> | Toggle, enable, or disable a Meteor Client module by name. Non-blocking — the module's own tick handler does the work (e.g. KillAura attacks on tick, AutoEat eats on tick). This replaces the laggy blocking attack-entity loop for combat: enable KillAura when hostiles are near, disable when clear.… |
@@ -158,7 +159,7 @@ The embedded brain loop, capability negotiation, and chat I/O.
 
 ---
 
-**83 tools total** (a few appear in more than one category).
+**84 tools total** (a few appear in more than one category).
 
 ### Queue-only task types
 

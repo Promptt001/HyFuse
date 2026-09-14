@@ -370,6 +370,17 @@ public final class McpToolRegistry {
 .number("z", "Z coordinate")
 .string("item", "Item to use: hoe for till (default: any hoe in inventory), seed item for plant (required for plant, e.g. wheat_seeds)")));
 
+        register("villager-trade",
+                "Trade with a villager or wandering trader. Right-click opens the trade screen, then either "
+                        + "list the offers (action=list, reports cost/result/out-of-stock per offer) or execute a "
+                        + "trade (action=trade + tradeIndex): selects the offer, moves the payment items into the "
+                        + "payment slots, and takes the result into inventory. Verifies by result pickup.",
+                objectSchema(schema -> schema
+.enumeration("action", "'list' shows offers; 'trade' executes tradeIndex (default: 'list')", "list", "trade")
+.string("entityName", "Villager or wandering trader name (e.g. 'villager', 'wandering_trader')")
+.integer("entityId", "Entity id from find-entity (alternative to entityName)")
+.integer("tradeIndex", "Index into the offer list to execute (action=trade)")));
+
         register("scan-area",
                 "Survey the blocks around the bot: block type counts, hazards (lava, fire, cactus,...), and optional "
                         + "filter matches",
