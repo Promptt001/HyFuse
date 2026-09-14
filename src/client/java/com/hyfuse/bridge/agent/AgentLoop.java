@@ -314,8 +314,8 @@ public final class AgentLoop {
     static final Set<String> AGENT_TOOLS = Set.of(
             "get-agent-snapshot", "get-events", "find-blocks",
             "goto-coords", "recover-stuck",
-            "mine-blocks", "dig-block", "place-block", "attack-entity",
-            "collect-drops", "eat-food",
+            "mine-blocks", "dig-block", "place-block", "use-item-on-block",
+            "attack-entity", "collect-drops", "eat-food",
             "craft-item", "can-craft", "smelt-item",
             "list-inventory", "auto-equip-best-gear", "deposit-items",
             "memory-save", "memory-read", "policy-save", "standing-start",

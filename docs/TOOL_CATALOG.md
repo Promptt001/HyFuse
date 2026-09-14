@@ -1,6 +1,6 @@
 # HyFuse Tool Catalog
 
-> All **79 tools** of the HyFuse MCP surface, generated directly from
+> All **80 tools** of the HyFuse MCP surface, generated directly from
 > `McpToolRegistry.java` by `tools/gen_tool_catalog.py` — this file never
 > drifts from the code. Each entry: what it does, its arguments, and when
 > an agent should reach for it.
@@ -58,6 +58,7 @@ Direct world manipulation, from single blocks to blueprint structures.
 |---|---|---|
 | [`dig-block`](#dig-block) | `x` <sub>number</sub>, `y` <sub>number</sub>, `z` <sub>number</sub>, `timeoutMs` <sub>int</sub>, `autoTool` <sub>bool</sub>, `preserveDurability` <sub>bool</sub> | Dig a block at the specified position. Auto-equips the best tool from inventory by default (M1: autoTool), and reports the tool used + remaining durability. When autoTool is false, the bot digs with whatever it holds. |
 | [`place-block`](#place-block) | `x` <sub>number</sub>, `y` <sub>number</sub>, `z` <sub>number</sub>, `faceDirection` <sub>enum</sub>, `timeoutMs` <sub>int</sub>, `block` <sub>string</sub>, `fallbackBlocks` <sub>array</sub>, `family` <sub>string</sub> | Place a block at the specified position. M3 (materialPalette cap): pass `block` to name the desired block and the server resolves it through its material family using the bot's inventory (oak_planks → cherry_planks when that's what's held) + auto-equips the resolved item before placing.… |
+| [`use-item-on-block`](#use-item-on-block) | `x` <sub>number</sub>, `y` <sub>number</sub>, `z` <sub>number</sub>, `item` <sub>string</sub>, `faceDirection` <sub>enum</sub> | Right-click interaction primitive: hold an item (optional, auto-equipped when named) and use it against a block face. Covers nether-portal ignition (flint_and_steel on obsidian frames), doors, trapdoors, levers, buttons, and other right-clickable blocks. Reports the block state after use and… |
 | [`build-structure`](#build-structure) | `origin` <sub>object</sub>, `x` <sub>number</sub>, `y` <sub>number</sub>, `z` <sub>number</sub>, `maxPasses` <sub>int</sub> | Build a structure from a blueprint as a background process (Baritone navigation + placeBlock with per-pass re-diff, MaterialPalette family resolution, shortfall reporting by family). Blueprint = the agent's shelter_3x3.json wire format {blocks:[{x,y,z,block}], digs:[]}. MaterialPalette rewrites… |
 | [`look-at`](#look-at) | `x` <sub>number</sub>, `y` <sub>number</sub>, `z` <sub>number</sub> | Make the bot look at a specific position |
 | [`place-torch`](#place-torch) | — | Place a torch from the inventory on the ground (or a wall) next to the bot to prevent mob spawning |
@@ -154,7 +155,7 @@ The embedded brain loop, capability negotiation, and chat I/O.
 
 ---
 
-**79 tools total** (a few appear in more than one category).
+**80 tools total** (a few appear in more than one category).
 
 ### Queue-only task types
 

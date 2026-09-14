@@ -311,6 +311,21 @@ public final class McpToolRegistry {
 .string("family", "Material family name (e.g. 'planks') so any held family member satisfies the "
                                 + "place (materialPalette cap)")));
 
+        register("use-item-on-block",
+                "Right-click interaction primitive: hold an item (optional, auto-equipped when named) and use it "
+                        + "against a block face. Covers nether-portal ignition (flint_and_steel on obsidian frames), "
+                        + "doors, trapdoors, levers, buttons, and other right-clickable blocks. Reports the block "
+                        + "state after use and portalIgnited:true when a nether portal formed.",
+                objectSchema(schema -> schema
+.required("x", "y", "z")
+.number("x", "X coordinate of the block to use")
+.number("y", "Y coordinate")
+.number("z", "Z coordinate")
+.string("item", "Optional item name to equip and use (e.g. 'flint_and_steel'); when omitted, uses the "
+                                + "currently-held item")
+.enumeration("faceDirection", "Face of the target block to click (default: 'up')",
+                                "up", "down", "north", "south", "east", "west")));
+
         register("scan-area",
                 "Survey the blocks around the bot: block type counts, hazards (lava, fire, cactus,...), and optional "
                         + "filter matches",

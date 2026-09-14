@@ -129,6 +129,7 @@ public final class ToolDispatcher {
                 // ── Tier B: Block Interaction ──
                 entry("dig-block", ToolDispatcher::digBlock),
                 entry("place-block", ToolDispatcher::placeBlock),
+                entry("use-item-on-block", ToolDispatcher::useItemOnBlock),
                 entry("scan-area", ToolDispatcher::scanArea),
 
                 // ── Tier C: Inventory Basics ──
@@ -1230,6 +1231,86 @@ public final class ToolDispatcher {
         result.addProperty("z", z);
         result.addProperty("block", blockName);
         result.addProperty("tool", toolUsed);
+        return result;
+    }
+
+    /**
+     * use-item-on-block (T4.4): right-click interaction primitive — hold an
+     * item (optional) and use it against a block face. Covers nether-portal
+     * ignition (flint-and-steel on obsidian), doors/trapdoors, levers,
+     * buttons, repeaters... anything a player right-clicks with an item.
+     * Mirrors placeBlock's equip + bounded hand-wait + useItemOn shape.
+     */
+    private static JsonObject useItemOnBlock(Minecraft client, JsonObject args) {
+        int x = requiredInt(args, "x");
+        int y = requiredInt(args, "y");
+        int z = requiredInt(args, "z");
+        BlockPos pos = new BlockPos(x, y, z);
+        ClientLevel level = client.level;
+        LocalPlayer player = client.player;
+
+        String item = optionalString(args, "item", "");
+        String faceDirName = optionalString(args, "faceDirection", "up");
+        Direction faceDir = Direction.byName(faceDirName.toLowerCase());
+        if (faceDir == null) faceDir = Direction.UP;
+
+        // Optional: equip the named item first (e.g. flint_and_steel).
+        if (!item.isEmpty()) {
+            equipItemByName(client, item);
+            String desiredSimple = simpleName(normalizeResourceId(item));
+            boolean inHand = false;
+            long deadline = System.currentTimeMillis() + 2000;
+            while (System.currentTimeMillis() < deadline) {
+                ItemStack held = client.player.getMainHandItem();
+                if (!held.isEmpty()
+                        && simpleName(itemRegistryName(held)).equals(desiredSimple)) {
+                    inHand = true;
+                    break;
+                }
+                try { Thread.sleep(50); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            if (!inHand) {
+                JsonObject result = new JsonObject();
+                result.addProperty("ok", false);
+                result.addProperty("status", "no_item_in_hand");
+                result.addProperty("x", x);
+                result.addProperty("y", y);
+                result.addProperty("z", z);
+                result.addProperty("item", item);
+                return result;
+            }
+        }
+
+        // Same face-click geometry as placeBlock: click on the face of the
+        // target block itself (we are USING the target, not placing beside it).
+        lookAtFacePoint(client, pos, faceDir);
+        Vec3 hitVec = facePointHitVec(pos, faceDir);
+        BlockHitResult hitResult = new BlockHitResult(hitVec, faceDir, pos, false);
+
+        InteractionResult interactionResult = client.gameMode.useItemOn(
+                player, InteractionHand.MAIN_HAND, hitResult);
+        player.swing(InteractionHand.MAIN_HAND);
+
+        // Brief settle for server round-trip, then verify by state change.
+        try { Thread.sleep(150); } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+        BlockState after = level.getBlockState(pos);
+        String afterName = blockRegistryName(after);
+        JsonObject result = new JsonObject();
+        result.addProperty("ok", true);
+        result.addProperty("status", "used");
+        result.addProperty("x", x);
+        result.addProperty("y", y);
+        result.addProperty("z", z);
+        result.addProperty("item", item.isEmpty() ? "(held)" : item);
+        result.addProperty("interactionResult", String.valueOf(interactionResult));
+        result.addProperty("blockAfter", afterName);
+        result.addProperty("portalIgnited",
+                afterName.contains("portal") && !afterName.contains("frame"));
         return result;
     }
 
