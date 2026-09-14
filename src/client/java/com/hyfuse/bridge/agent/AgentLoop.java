@@ -318,7 +318,8 @@ public final class AgentLoop {
             "attack-entity", "entity-interact", "bucket-fluid", "farm-plot", "collect-drops", "eat-food",
             "craft-item", "can-craft", "smelt-item",
             "list-inventory", "auto-equip-best-gear", "deposit-items",
-            "memory-save", "memory-read", "policy-save", "standing-start",
+            "memory-save", "memory-read", "policy-save", "standing-start", "standing-status",
+            "sleep-in-bed", "craft-with-deps", "withdraw-items", "journal-append",
             "get-capabilities", "enqueue-tasks", "cancel-current-action");
 
     // Ring 2: exposed only when the capability key reads true from

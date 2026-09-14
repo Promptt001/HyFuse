@@ -10,7 +10,7 @@
 > (policies), repetition (standing processes), and manual real-time control
 > are deliberately *not* the LLM's job.
 
-## Ring 1 — Lean agent set (28 tools, default exposure)
+## Ring 1 — Lean agent set (33 tools, default exposure)
 
 ### Sense & orient (3)
 - `get-agent-snapshot` — one-call brain refresh; absorbs 4 standalone tools
@@ -21,7 +21,7 @@
 - `goto-coords` — the sole blessed travel verb (Baritone #goto + arrival gate)
 - `recover-stuck` — the reflex the agent may invoke itself when boxed in
 
-### Act on the world (9)
+### Act on the world (10)
 - `mine-blocks` — bulk gather backbone
 - `dig-block` — single-block precision (shelter, clearance)
 - `place-block` — building primitive (materialPalette substitution)
@@ -31,30 +31,35 @@
 - `farm-plot` — till/plant/harvest/fertilize crops (T4.8)
 - `collect-drops` — turns kills/mines into inventory (load-bearing)
 - `eat-food` — hunger reflex triggered deliberately
+- `sleep-in-bed` — skip the night, reset spawn (T4.9 re-add)
 
-### Craft & process (3)
+### Craft & process (4)
 - `craft-item` — the make verb
 - `can-craft` — pre-flight check, avoids wasted iterations
 - `smelt-item` — ore→ingot, required by the iron/diamond loop
+- `craft-with-deps` — recursive recipe trees (T4.9 re-add)
 
-### Inventory & gear (3)
+### Inventory & gear (4)
 - `list-inventory` — what do I have (post-gather, pre-craft)
 - `auto-equip-best-gear` — one-call gear-up after tier upgrades
 - `deposit-items` — haul-home-and-store half of the mining loop
+- `withdraw-items` — restock from base chests (T4.9 re-add)
 
-### Autonomy & memory (4)
+### Autonomy & memory (6)
 - `memory-save` / `memory-read` — persistent facts (base, hazards, waypoints)
+- `journal-append` — session continuity, event log (T4.9 re-add)
 - `policy-save` — install-a-reflex; shrinks future deliberation
 - `standing-start` — run goal cycles without LLM round-trips
+- `standing-status` — observe installed reflexes (T4.9 re-add)
 
 ### Supervision & meta (3)
 - `get-capabilities` — startup self-model; drives Ring-2 gating
 - `enqueue-tasks` — linear multi-step plans
 - `cancel-current-action` — the agent's own abort switch
 
-**First re-add candidates** (when usage data justifies): `journal-append`
-(session continuity), `sleep-in-bed` (night skip), `craft-with-deps`
-(recipe trees), `withdraw-items`, `standing-status`.
+**T4.9 re-adds (2026-09-14):** `sleep-in-bed`, `craft-with-deps`,
+`withdraw-items`, `journal-append`, `standing-status` — moved from the
+anti-list into Ring-1 to make the next release substantial. 33 total.
 
 ## Ring 2 — Conditional (exposed only when a capability is true)
 
@@ -79,12 +84,12 @@ fully available on the MCP/OpenAPI operator doors (83-tool pin intact).
 - **Manual real-time steering (LLM-inappropriate, Baritone better):** `move-in-direction`, `look-at`, `raycast-look`, `path-safely`, `set-movement-profile`
 - **Duplicate nav/follow verbs:** `navigate-v2`, `follow-entity`, `find-safe-location`
 - **Rare deliberate surveys / operator diagnostics:** `get-block-info`, `get-blocks`, `scan-area`, `scan-volume`, `find-entity`, `find-item`
-- **Inventory micro-management:** `move-item`, `organize-inventory`, `resolve-material`, `equip-item`, `open-container`, `withdraw-items`
-- **Reflex/install-once machinery:** `escape-water`, `place-torch`, `sleep-in-bed`, `standing-stop`, `standing-status`, `policy-forget`
+- **Inventory micro-management:** `move-item`, `organize-inventory`, `resolve-material`, `equip-item`, `open-container`
+- **Reflex/install-once machinery:** `escape-water`, `place-torch`, `standing-stop`, `policy-forget`
 - **Social/chat — trust boundary (playbook §2):** `send-chat`, `read-chat`
 - **Operator-only lifecycle:** `agent-start`, `agent-stop`
 - **Destructive-forget primitives:** `memory-forget`
-- **Deferred pending usage data:** `journal-read`, `journal-append`, `get-playbook`, `craft-with-deps`, `get-current-action`, `agent-status`, `get-last-death`, `standing-status` (re-add candidates above)
+- **Deferred pending usage data:** `journal-read`, `get-playbook`, `get-current-action`, `agent-status`, `get-last-death` (re-add candidates above)
 
 ## Governance
 

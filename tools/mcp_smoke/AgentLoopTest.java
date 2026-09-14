@@ -74,7 +74,7 @@ public final class AgentLoopTest {
         for (var el : tools) {
             names.add(el.getAsJsonObject().getAsJsonObject("function").get("name").getAsString());
         }
-        check("agent toolset size is Ring-1 only (28)", names.size() == 28,
+        check("agent toolset size is Ring-1 only (33)", names.size() == 33,
                 "size " + names.size());
         check("agent toolset excludes operator tools",
                 !names.contains("agent-stop") && !names.contains("send-chat")
@@ -98,7 +98,7 @@ public final class AgentLoopTest {
         }
         check("worldCache=true admits scan-nearby-entities + find-ore-veins",
                 gatedNames.contains("scan-nearby-entities") && gatedNames.contains("find-ore-veins")
-                        && gatedNames.size() == 30, "gated size " + gatedNames.size());
+                        && gatedNames.size() == 35, "gated size " + gatedNames.size());
         AgentLoop.capabilityPresence = Map.of(); // restore default
 
         // 4. Full two-iteration loop with a scripted transport.
