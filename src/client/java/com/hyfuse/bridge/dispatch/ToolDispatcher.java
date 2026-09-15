@@ -2000,34 +2000,42 @@ public final class ToolDispatcher {
             client.player.swing(InteractionHand.MAIN_HAND);
             return null;
         });
-        boolean airNow = Boolean.TRUE.equals(callOnClient(client,
-                () -> Boolean.valueOf(client.level.getBlockState(pos).isAir())));
-        long lastContinueGameTime = callOnClient(client,
-                () -> Long.valueOf(client.level.getGameTime())) - 1;
-        while (!airNow && System.currentTimeMillis() < deadline) {
-            // D1-3: wait for the NEXT game tick before sending the next
-            // continue — vanilla fires continueDestroyBlock exactly once per
-            // tick; the old fixed ~50ms worker sleep desynchronized cadence
-            // on multi-tick digs (see method javadoc).
-            long nowGameTime = callOnClient(client,
-                    () -> Long.valueOf(client.level.getGameTime()));
-            if (nowGameTime <= lastContinueGameTime) {
+        // D1-4 (T5.3-LIVE#3): ONE callOnClient hop per continue. The old
+        // shape burned 3 hops per iteration (gameTime read -> continue ->
+        // air check); client.execute tasks are serviced once per render
+        // frame, so 3 hops ~= 3 frames per continue vs vanilla's 1
+        // continue/tick — progress landed at ~1/6-1/20 the vanilla rate
+        // (90-tick break cost ~75s live). Now a single marshalled lambda
+        // reads gameTime, sends the continue (only when the tick advanced)
+        // and re-checks air in the same hop: cadence ~1 frame per tick at
+        // typical fps >= 20, matching vanilla to within one frame.
+        long[] tickState = new long[] { Long.MIN_VALUE };
+        boolean[] airState = new boolean[] { Boolean.TRUE.equals(
+                callOnClient(client, () -> Boolean.valueOf(
+                        client.level.getBlockState(pos).isAir()))) };
+        while (!airState[0] && System.currentTimeMillis() < deadline) {
+            Boolean sent = callOnClient(client, () -> {
+                long nowGameTime = client.level.getGameTime();
+                if (nowGameTime <= tickState[0]) {
+                    return Boolean.FALSE; // tick not advanced yet — no continue
+                }
+                tickState[0] = nowGameTime;
+                client.gameMode.continueDestroyBlock(pos, face);
+                client.player.swing(InteractionHand.MAIN_HAND);
+                airState[0] = client.level.getBlockState(pos).isAir();
+                return Boolean.TRUE;
+            });
+            if (!Boolean.TRUE.equals(sent)) {
+                // Same game tick as the last continue — sleep a fraction of
+                // a tick before re-hopping (inner sleep stays on the WORKER,
+                // never on the render thread).
                 try { Thread.sleep(5); } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return "interrupted";
                 }
-                continue;
             }
-            lastContinueGameTime = nowGameTime;
-            callOnClient(client, () -> {
-                client.gameMode.continueDestroyBlock(pos, face);
-                client.player.swing(InteractionHand.MAIN_HAND);
-                return null;
-            });
-            airNow = Boolean.TRUE.equals(callOnClient(client,
-                    () -> Boolean.valueOf(client.level.getBlockState(pos).isAir())));
         }
-        if (!airNow) {
+        if (!airState[0]) {
             Integer stage = callOnClient(client,
                     () -> Integer.valueOf(client.gameMode.getDestroyStage()));
             return "timeout@stage" + (stage == null ? -1 : stage.intValue());
@@ -2079,50 +2087,108 @@ public final class ToolDispatcher {
         result.addProperty("action", action);
 
         // Open the trade screen by right-clicking the villager (no item).
-        if (callOnClient(client, () -> client.player.containerMenu.containerId) != 0) {
-            closeContainer(client);
-        }
+        // G5-1 self-heal: failed calls reliably leave the trade GUI open —
+        // if a MerchantMenu/MerchantScreen is ALREADY open, skip the close
+        // and the re-interact entirely and list against the open screen.
+        boolean alreadyOpen = Boolean.TRUE.equals(callOnClient(client, () -> {
+            if (client.player.containerMenu instanceof MerchantMenu) return Boolean.TRUE;
+            return Boolean.valueOf(client.gui.screen()
+                    instanceof net.minecraft.client.gui.screens.inventory.MerchantScreen);
+        }));
+        result.addProperty("screenAlreadyOpen", alreadyOpen);
+        InteractionResult openResult = null;
+        if (!alreadyOpen) {
+            if (callOnClient(client, () -> client.player.containerMenu.containerId) != 0) {
+                closeContainer(client);
+            }
         final Entity target = merchant;
         final LocalPlayer playerF = player;
-        InteractionResult openResult = callOnClient(client, () -> {
-            lookAtEntity(client, target);
-            InteractionResult r = client.gameMode.interact(player, target,
-                    new EntityHitResult(target), InteractionHand.MAIN_HAND);
-            playerF.swing(InteractionHand.MAIN_HAND);
-            return r;
-        });
-        result.addProperty("interactResult", String.valueOf(openResult));
+            openResult = callOnClient(client, () -> {
+                lookAtEntity(client, target);
+                InteractionResult r = client.gameMode.interact(player, target,
+                        new EntityHitResult(target), InteractionHand.MAIN_HAND);
+                playerF.swing(InteractionHand.MAIN_HAND);
+                return r;
+            });
+            result.addProperty("interactResult", String.valueOf(openResult));
+        } else {
+            result.addProperty("interactResult", "skipped (screen already open)");
+        }
 
-        // Wait (bounded) for the MerchantMenu to open.
-        long deadline = System.currentTimeMillis() + 2000;
-        AbstractContainerMenu menu = null;
+        // Wait (bounded) for the trade screen to open.
+        // G5-1 (T5.3-LIVE#4): the marshalled containerMenu poll was proven
+        // insufficient — the trade GUI visibly opens while containerMenu
+        // never becomes a MerchantMenu (javap-verified vanilla 26.2 chain
+        // assigns containerMenu BEFORE setScreen, so an in-window open
+        // cannot be missed by that poll; therefore the open is NOT going
+        // through the vanilla assignment path — suspect Meteor interception
+        // or a plugin non-vanilla menu). Accept EITHER a MerchantMenu
+        // containerMenu OR a MerchantScreen currently on the gui, and keep
+        // diagnostics: on failure, report what the containerMenu and the
+        // current screen actually ARE, so one live failure pins the
+        // mechanism. Window widened 2s -> 8s (cheap insurance for slow opens).
+        long deadline = System.currentTimeMillis() + 8000;
+        MerchantMenu merchantMenu = null;
+        String containerMenuClass = null;
+        String currentScreenClass = null;
         while (System.currentTimeMillis() < deadline) {
-            // G5-1: read containerMenu through callOnClient — an unmarshalled
-            // read from the queue worker has no happens-before with the main
-            // thread that swaps the field on screen-open, so the worker can
-            // miss the (visibly open) screen for the whole 2s window.
-            AbstractContainerMenu current = callOnClient(client,
-                    () -> client.player.containerMenu);
-            if (current != null && current instanceof MerchantMenu) {
-                menu = current;
+            Object[] observed = callOnClient(client, () -> {
+                AbstractContainerMenu cm = client.player.containerMenu;
+                net.minecraft.client.gui.screens.Screen screen = client.gui.screen();
+                MerchantMenu hit = null;
+                if (cm instanceof MerchantMenu mm) {
+                    hit = mm;
+                } else if (screen instanceof net.minecraft.client.gui.screens.inventory.MerchantScreen ms) {
+                    hit = ms.getMenu();
+                }
+                String cmClass = (cm == null) ? "null" : cm.getClass().getSimpleName();
+                String scClass = (screen == null) ? "null" : screen.getClass().getSimpleName();
+                return new Object[] { hit, cmClass, scClass };
+            });
+            if (observed != null && observed[0] instanceof MerchantMenu) {
+                merchantMenu = (MerchantMenu) observed[0];
+                containerMenuClass = (String) observed[1];
+                currentScreenClass = (String) observed[2];
                 break;
-    }
+            }
+            if (observed != null) {
+                containerMenuClass = (String) observed[1];
+                currentScreenClass = (String) observed[2];
+            }
             try { Thread.sleep(50); } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
             }
         }
-        if (menu == null) {
+        if (merchantMenu == null) {
             result.addProperty("ok", false);
             result.addProperty("status", "no_trade_screen");
-            result.addProperty("error", "Trade screen did not open - villager may be busy or trading locked.");
+            result.addProperty("containerMenuClass", containerMenuClass);
+            result.addProperty("currentScreenClass", currentScreenClass);
+            result.addProperty("error", "Trade screen did not open - villager may be busy or trading locked."
+                    + " (containerMenu=" + containerMenuClass
+                    + ", screen=" + currentScreenClass + ")");
             return result;
         }
-        MerchantMenu merchantMenu = (MerchantMenu) menu;
-        int containerId = merchantMenu.containerId;
-
-        // Offers snapshot (list from the menu, which mirrors server offers).
-        MerchantOffers offers = callOnClient(client, () -> villager.getOffers());
+        // G5-1: if a merchant screen is already open when the call starts,
+        // do NOT close/re-interact first — but the pre-open close above only
+        // runs when containerId != 0, and a leftover MerchantMenu left open
+        // by a previous failed call is self-healed by this poll (the open
+        // check accepts an already-open screen at call start).
+        final MerchantMenu mm = merchantMenu;
+        int containerId = mm.containerId;
+        result.addProperty("screenOpened", true);
+        // Offers snapshot: prefer the packet-backed MerchantMenu.getOffers()
+        // (synced by handleMerchantOffers from the server); fall back to the
+        // client-side villager entity offers if the menu list is empty.
+        // merchantMenu local is reassigned in the wait loop above, so
+        // lambdas capture the final copy. Prefer the packet-backed
+        // MerchantMenu.getOffers() (synced by handleMerchantOffers); fall
+        // back to the villager-entity offers if the menu list is empty.
+        MerchantOffers offers = callOnClient(client, () -> mm.getOffers());
+        if (offers == null || offers.isEmpty()) {
+            offers = callOnClient(client, () -> villager.getOffers());
+        }
         if (offers == null || offers.isEmpty()) {
             result.addProperty("ok", false);
             result.addProperty("screenOpened", true);
@@ -2176,7 +2242,7 @@ public final class ToolDispatcher {
 
         // Select the trade, then move payment into PAYMENT1 slot 0.
         callOnClient(client, () -> {
-            merchantMenu.setSelectionHint(tradeIndex);
+            mm.setSelectionHint(tradeIndex);
             return true;
         });
         client.gameMode.handleInventoryButtonClick(containerId, tradeIndex);
