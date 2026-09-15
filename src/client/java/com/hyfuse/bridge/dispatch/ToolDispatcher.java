@@ -307,10 +307,49 @@ public final class ToolDispatcher {
         caps.addProperty("meteorPresent", classExists("meteordevelopment.meteorclient.systems.Systems"));
         caps.addProperty("baritonePresent", classExists("baritone.api.BaritoneAPI"));
 
+        // T5.3-LIVE#2 §19.6.2 #4: surface whether Meteor's AutoTool module is
+        // ACTIVE — it swaps the held slot every tick and breaks dig loops
+        // (sameDestroyTarget resets on item-component change → zero-progress
+        // loops, corrupted `tool:` echoes). Session operators must disable it
+        // before any dig testing; this makes the conflict visible in the
+        // standard session-start probe instead of masquerading as a dig defect.
+        boolean meteorOn = caps.get("meteorPresent").getAsBoolean();
+        boolean autoToolActive = meteorOn && isMeteorModuleActive(client, "auto-tool");
+        caps.addProperty("meteorAutoToolActive", autoToolActive);
+
         JsonObject result = new JsonObject();
         result.addProperty("status", "ok");
         result.add("capabilities", caps);
+        if (autoToolActive) {
+            result.addProperty("warning", "Meteor 'auto-tool' is ACTIVE — it swaps the held "
+                    + "slot every tick and breaks dig-block/Baritone digs (sameDestroyTarget "
+                    + "resets mid-dig). Disable it via toggle-meteor-module before any dig work.");
+        }
         return result;
+    }
+
+    /** True when the named Meteor module exists and is active (false when
+     *  Meteor is absent, the module is missing, or reflection fails).
+     *  Uses the same reflection as list-meteor-modules ({name, isActive}). */
+    private static boolean isMeteorModuleActive(Minecraft client, String moduleName) {
+        try {
+            JsonObject args = new JsonObject();
+            args.addProperty("filter", moduleName);
+            JsonObject r = listMeteorModules(client, args);
+            if (r == null || !r.has("modules")) return false;
+            for (JsonElement el : r.getAsJsonArray("modules")) {
+                if (!el.isJsonObject()) continue;
+                JsonObject m = el.getAsJsonObject();
+                String name = m.has("name") ? m.get("name").getAsString(): "";
+                boolean active = m.has("isActive") && m.get("isActive").getAsBoolean();
+                if (active && (name.toLowerCase().contains(moduleName.toLowerCase())
+                        || name.toLowerCase().contains(moduleName.toLowerCase().replace('-', '_')))) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     /** True when the named class is on the classpath (mod presence probe). */
@@ -1223,53 +1262,30 @@ public final class ToolDispatcher {
             // Creative: instant break
             client.gameMode.destroyBlock(pos);
         } else {
-            // T5.3-live/D1-2: this handler now runs on the QUEUE worker
-            // (T5.3/D1-1 routing). Every client-state touch below is
-            // marshalled through callOnClient — the raw client-thread loop
-            // raced the render thread on multi-tick digs (live: "Tried to
-            // access render state from outside the main render thread",
-            // the break then never landed server-side and the client's
-            // predicted break resynced back to the real block).
+            // T5.3-live/D1-2: this handler runs on the QUEUE worker
+            // (T5.3/D1-1 routing); every client-state touch stays marshalled
+            // through callOnClient. T5.3-live#2/D1-3: the continue cadence is
+            // now tick-aligned and the timeout no longer aborts the break —
+            // see destroyBlockLoop's javadoc.
             final BlockPos fPos = pos;
             final Direction fFace = face;
-            callOnClient(client, () -> {
-                client.gameMode.startDestroyBlock(fPos, fFace);
-                client.player.swing(InteractionHand.MAIN_HAND);
-                return null;
-            });
-            boolean airNow = Boolean.TRUE.equals(callOnClient(client,
-                    () -> Boolean.valueOf(client.level.getBlockState(fPos).isAir())));
-            while (!airNow && System.currentTimeMillis() < deadline) {
-                callOnClient(client, () -> {
-                    client.gameMode.continueDestroyBlock(fPos, fFace);
-                    client.player.swing(InteractionHand.MAIN_HAND);
-                    return null;
-                });
-                try {
-                    Thread.sleep(50); // one tick
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-                airNow = Boolean.TRUE.equals(callOnClient(client,
-                        () -> Boolean.valueOf(client.level.getBlockState(fPos).isAir())));
-            }
-            if (!airNow) {
-                // Timed out — stop breaking (marshalled)
-                callOnClient(client, () -> {
-                    client.gameMode.stopDestroyBlock();
-                    return null;
-                });
-                Integer stage = callOnClient(client,
-                        () -> Integer.valueOf(client.gameMode.getDestroyStage()));
+            String outcome = destroyBlockLoop(client, fPos, fFace, timeoutMs);
+            if (!"broken".equals(outcome)) {
+                // "timeout@stageN" or "interrupted" — keep the dig-block
+                // response shape: status stays "timeout" with the live
+                // destroyStage surfaced separately.
+                int stageIdx = outcome.indexOf("@stage");
+                int stage = stageIdx >= 0
+                        ? Integer.parseInt(outcome.substring(stageIdx + 6)) : -1;
                 JsonObject result = new JsonObject();
-                result.addProperty("status", "timeout");
+                result.addProperty("status", "interrupted".equals(outcome) ? "interrupted" : "timeout");
                 result.addProperty("x", x);
                 result.addProperty("y", y);
                 result.addProperty("z", z);
                 result.addProperty("block", blockName);
                 result.addProperty("tool", toolUsed);
-                result.addProperty("destroyStage", stage == null ? -1 : stage.intValue());
+                result.addProperty("destroyStage", stage);
+                result.addProperty("note", "dig stopped at deadline; server-side break progress NOT aborted (no ABORT packet sent) — retry to resume");
                 return result;
             }
         }
@@ -1947,43 +1963,74 @@ public final class ToolDispatcher {
      */
     private static String breakBlockAt(Minecraft client, BlockPos pos, BlockState state) {
         LocalPlayer player = client.player;
-        ClientLevel level = client.level;
         Direction face = computeFaceTowards(player, pos);
         lookAtBlockCenter(client, pos);
-        long deadline = System.currentTimeMillis() + 25000;
         if (player.isCreative()) {
             callOnClient(client, () -> {
                 client.gameMode.destroyBlock(pos);
                 return null;
             });
         } else {
+            String outcome = destroyBlockLoop(client, pos, face, 25000);
+            if (!"broken".equals(outcome)) return outcome;
+        }
+        return "broken";
+    }
+
+    /**
+     * D1-3 (T5.3-LIVE#2): tick-aligned destroy loop shared by dig-block,
+     * farm-plot's breakBlockAt and the standing mine leg. Root cause of the
+     * multi-tick dig failures: vanilla fires continueDestroyBlock exactly
+     * ONCE PER GAME TICK, accumulating destroyProgress per call; HyFuse's
+     * old loop fired continues on a wall-clock ~50ms sleep plus two
+     * callOnClient round-trips per iteration, i.e. at an unaligned, slower
+     * cadence — the FINISH prediction (progress >= 1.0) never fired, so the
+     * break never landed server-side even though destroyStage rose (5-9
+     * observed live). Additionally the old timeout path sent a blanket
+     * stopDestroyBlock() ABORT packet, which discards server-side progress
+     * and can leave ghost states; on timeout we now stop sending continues
+     * WITHOUT the abort (server progress decays naturally), and we surface
+     * the live destroyStage so a retry can resume near where it left off.
+     * Every client-state touch stays marshalled (D1-2 discipline).
+     */
+    private static String destroyBlockLoop(Minecraft client, BlockPos pos, Direction face, int timeoutMs) {
+        final long deadline = System.currentTimeMillis() + timeoutMs;
+        callOnClient(client, () -> {
+            client.gameMode.startDestroyBlock(pos, face);
+            client.player.swing(InteractionHand.MAIN_HAND);
+            return null;
+        });
+        boolean airNow = Boolean.TRUE.equals(callOnClient(client,
+                () -> Boolean.valueOf(client.level.getBlockState(pos).isAir())));
+        long lastContinueGameTime = callOnClient(client,
+                () -> Long.valueOf(client.level.getGameTime())) - 1;
+        while (!airNow && System.currentTimeMillis() < deadline) {
+            // D1-3: wait for the NEXT game tick before sending the next
+            // continue — vanilla fires continueDestroyBlock exactly once per
+            // tick; the old fixed ~50ms worker sleep desynchronized cadence
+            // on multi-tick digs (see method javadoc).
+            long nowGameTime = callOnClient(client,
+                    () -> Long.valueOf(client.level.getGameTime()));
+            if (nowGameTime <= lastContinueGameTime) {
+                try { Thread.sleep(5); } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return "interrupted";
+                }
+                continue;
+            }
+            lastContinueGameTime = nowGameTime;
             callOnClient(client, () -> {
-                client.gameMode.startDestroyBlock(pos, face);
+                client.gameMode.continueDestroyBlock(pos, face);
                 client.player.swing(InteractionHand.MAIN_HAND);
                 return null;
             });
-            boolean airNow = Boolean.TRUE.equals(callOnClient(client,
+            airNow = Boolean.TRUE.equals(callOnClient(client,
                     () -> Boolean.valueOf(client.level.getBlockState(pos).isAir())));
-            while (!airNow && System.currentTimeMillis() < deadline) {
-                callOnClient(client, () -> {
-                    client.gameMode.continueDestroyBlock(pos, face);
-                    client.player.swing(InteractionHand.MAIN_HAND);
-                    return null;
-                });
-                try { Thread.sleep(50); } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-                airNow = Boolean.TRUE.equals(callOnClient(client,
-                        () -> Boolean.valueOf(client.level.getBlockState(pos).isAir())));
-            }
-            if (!airNow) {
-                callOnClient(client, () -> {
-                    client.gameMode.stopDestroyBlock();
-                    return null;
-                });
-                return "timeout";
-            }
+        }
+        if (!airNow) {
+            Integer stage = callOnClient(client,
+                    () -> Integer.valueOf(client.gameMode.getDestroyStage()));
+            return "timeout@stage" + (stage == null ? -1 : stage.intValue());
         }
         return "broken";
     }
@@ -2257,7 +2304,11 @@ public final class ToolDispatcher {
         BlockPos neighbor = pos.relative(faceDir.getOpposite());
         BlockState neighborState = level.getBlockState(neighbor);
 
-        // If the target pos is occupied, we can't place there
+        // If the target pos is occupied, we can't place there.
+        // T5.3-LIVE#2 defect #8 clarity: name BOTH blocks so an occupied
+        // destination can't be misread as a complaint about the clicked
+        // support block — x/y/z + blockAtDestination describe the cell that
+        // is full; clickedBlock names the support face we would have used.
         if (!level.getBlockState(pos).isAir() && !level.getBlockState(pos).canBeReplaced()) {
             JsonObject result = new JsonObject();
             result.addProperty("ok", false);
@@ -2266,6 +2317,11 @@ public final class ToolDispatcher {
             result.addProperty("y", y);
             result.addProperty("z", z);
             result.addProperty("block", blockRegistryName(level.getBlockState(pos)));
+            result.addProperty("blockAtDestination", blockRegistryName(level.getBlockState(pos)));
+            result.addProperty("clickedBlock", blockRegistryName(neighborState));
+            result.addProperty("message", "destination cell (" + x + "," + y + "," + z
+                    + ") is occupied by " + blockRegistryName(level.getBlockState(pos))
+                    + " (click would be against " + blockRegistryName(neighborState) + ")");
             return result;
         }
 
@@ -2480,20 +2536,38 @@ public final class ToolDispatcher {
         if (preferredType.isEmpty()) return "none";
 
         Inventory inv = client.player.getInventory();
-        // Search hotbar for a tool of the preferred type
+        // Search hotbar for a tool of the preferred type.
+        // T5.3-LIVE#2 dead-code fix: the old matcher built strings like
+        // "pickaxe_pickaxe" (preferredType + "_pickaxe") which can never
+        // equal an item name — autoTool silently equipped nothing. Correct
+        // matcher: the item's simple name must END WITH the tool class
+        // suffix ("_pickaxe", "_axe", "_shovel", "_hoe"); tools are ranked
+        // by material tier, and near-broken tools (durability left < 10%)
+        // are skipped so autoTool doesn't equip an about-to-shatter tool.
+        String classSuffix = "_" + preferredType;
         int bestSlot = -1;
         int bestTier = -1;
+        float bestDurabilityFraction = -1f;
         for (int i = 0; i < 9; i++) {
             ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) continue;
             String name = itemRegistryName(stack);
-            if (name.contains(preferredType + "_pickaxe") || name.contains(preferredType + "_axe")
-                    || name.contains(preferredType + "_shovel") || name.contains(preferredType + "_hoe")) {
-                int tier = toolTier(name);
-                if (tier > bestTier) {
-                    bestTier = tier;
-                    bestSlot = i;
-                }
+            String simple = simpleName(name);
+            boolean classMatch = simple.endsWith(classSuffix);
+            // "_axe" also matches "_pickaxe"-suffixed names? No —
+            // "diamond_pickaxe".endsWith("_axe") is false ("kaxe" tail),
+            // so the endsWith check is unambiguous per class.
+            if (!classMatch) continue;
+            int maxDmg = stack.getMaxDamage();
+            float durabilityFraction = maxDmg <= 0 ? 1f
+                    : (maxDmg - stack.getDamageValue()) / (float) maxDmg;
+            if (durabilityFraction < 0.10f) continue; // near-broken — skip
+            int tier = toolTier(name);
+            if (tier > bestTier
+                    || (tier == bestTier && durabilityFraction > bestDurabilityFraction)) {
+                bestTier = tier;
+                bestSlot = i;
+                bestDurabilityFraction = durabilityFraction;
             }
         }
         if (bestSlot >= 0) {
@@ -2551,17 +2625,34 @@ public final class ToolDispatcher {
     }
 
     private static void equipItemByName(Minecraft client, String itemName) {
+        // D1-2 family discipline: all inventory reads + the swap click are
+        // marshalled — this helper is invoked from queue-worker contexts
+        // (bucket-fluid, entity-interact, farm-plot, use-item-on-block,
+        // place-block) and the old unmarshalled reads raced the render thread.
+        callOnClient(client, () -> {
+            equipItemByNameOnClient(client, itemName);
+            return null;
+        });
+    }
+
+    private static void equipItemByNameOnClient(Minecraft client, String itemName) {
         // A stale open container menu (auto-opened table/chest)
         // changes the window layout under us — close it before clicking.
         if (client.player.containerMenu.containerId != 0) closeContainer(client);
-        String targetName = normalizeResourceId(itemName);
+        // T5.3-LIVE#2 / E-fill-2 + entity-interact equip fix: match by SIMPLE
+        // name (namespace-insensitive, exact suffix), never substring-contains
+        // — the old `name.contains(itemName)` fallback matched wrong items
+        // ("water_bucket".contains("bucket") → equipping a FILLED bucket for
+        // a fill action) and namespaced targets ("minecraft:bucket") fell
+        // through every exact branch. The strict matcher mirrors the
+        // hand-wait checks the callers run afterwards (they compare simple
+        // names), so equip and verify now agree.
+        String targetSimple = simpleName(normalizeResourceId(itemName));
         Inventory inv = client.player.getInventory();
         for (int i = 0; i < 9; i++) {
             ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) continue;
-            String name = itemRegistryName(stack);
-            if (name.equals(targetName) || name.endsWith(":" + targetName)
-                    || name.contains(itemName)) {
+            if (simpleName(itemRegistryName(stack)).equals(targetSimple)) {
                 syncSelectedSlot(client, i);
                 return;
             }
@@ -2570,17 +2661,23 @@ public final class ToolDispatcher {
         for (int i = 9; i < inv.getContainerSize(); i++) {
             ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) continue;
-            String name = itemRegistryName(stack);
-            if (name.equals(targetName) || name.endsWith(":" + targetName)
-                    || name.contains(itemName)) {
+            if (simpleName(itemRegistryName(stack)).equals(targetSimple)) {
                 int destSlot = -1;
                 for (int j = 0; j < 9; j++) {
                     if (inv.getItem(j).isEmpty()) { destSlot = j; break; }
                 }
                 if (destSlot < 0) destSlot = inv.getSelectedSlot();
-                int syncId = client.player.containerMenu.containerId;
+                // E-fill-2: the swap must go through the PLAYER screen's
+                // containerId (0), not whatever containerMenu id happens to
+                // be set — after the closeContainer above the menu may still
+                // be transitioning; the wrong containerId makes the server
+                // apply the SWAP to a nonexistent/stale window, the client
+                // then predicts one layout while the server holds another,
+                // and the bucket-use transform never lands in the visible
+                // inventory (live: source consumed, bucket count dropped,
+                // no water_bucket anywhere).
                 client.gameMode.handleContainerInput(
-                        syncId, invSlotToWindow(i), destSlot,
+                        0, invSlotToWindow(i), destSlot,
                         net.minecraft.world.inventory.ContainerInput.SWAP, client.player);
                 syncSelectedSlot(client, destSlot);
                 return;
@@ -4300,6 +4397,74 @@ public final class ToolDispatcher {
     /**
      * Get ingredient item names from a RecipeDisplay (for shaped/shapeless crafting).
      */
+    /**
+     * H4b (T5.3-LIVE#2): manual ingredient placement fallback for craft-item.
+     * The server's handlePlaceRecipe only fills the grid when the player's
+     * SERVER-side recipe book contains the recipe; otherwise it ghost-fills
+     * (ClientboundPlaceGhostRecipePacket) and the result slot never fills.
+     * This helper places each ingredient into its grid cell with plain
+     * container clicks — PICKUP the source stack, right-click the grid cell
+     * (deposits exactly ONE item), PICKUP the source again to return the
+     * remainder — the same moves a human player makes, so the server
+     * assembles the recipe regardless of recipe-book unlock state.
+     * MUST run inside a single callOnClient hop (no sleeps; sequential
+     * client-thread clicks with client-side prediction, server confirms
+     * async and the caller polls the result slot afterwards).
+     * Grid layout: table menu slots 1-9 (3x3 row-major), inventory menu
+     * slots 1-4 (2x2 row-major); shaped patterns place at top-left.
+     * Returns true when every non-empty pattern cell was placed.
+     */
+    private static boolean placeRecipeIngredientsManually(Minecraft client, int cid,
+            RecipeDisplay display, boolean needsTable) {
+        LocalPlayer player = client.player;
+        List<SlotDisplay> cells = new ArrayList<>();
+        int patternWidth;
+        if (display instanceof ShapedCraftingRecipeDisplay shaped) {
+            cells.addAll(shaped.ingredients());
+            patternWidth = shaped.width();
+        } else if (display instanceof ShapelessCraftingRecipeDisplay shapeless) {
+            cells.addAll(shapeless.ingredients());
+            patternWidth = 0; // shapeless: place sequentially
+        } else {
+            return false;
+        }
+        int invStart = needsTable ? 10 : 9;
+        int gridStride = needsTable ? 3 : 2;
+        int totalSlots = player.containerMenu.slots.size();
+        int nextSeq = 0;
+        for (int i = 0; i < cells.size(); i++) {
+            String name = slotDisplayToItemName(cells.get(i), player);
+            if (name == null) continue; // empty cell in the shaped pattern
+            int gridSlot;
+            if (patternWidth > 0) {
+                int r = i / patternWidth;
+                int c = i % patternWidth;
+                gridSlot = 1 + r * gridStride + c;
+            } else {
+                gridSlot = 1 + nextSeq;
+                nextSeq++;
+            }
+            if (gridSlot >= invStart) return false; // pattern larger than the open grid
+            // Defensive: the grid cell must be empty or already hold the
+            // correct item (a prior attempt may have placed it).
+            ItemStack inGrid = player.containerMenu.getSlot(gridSlot).getItem();
+            if (!inGrid.isEmpty()) {
+                if (itemRegistryName(inGrid).equals(name)) continue;
+                return false;
+            }
+            int src = -1;
+            for (int s = invStart; s < totalSlots; s++) {
+                ItemStack st = player.containerMenu.getSlot(s).getItem();
+                if (!st.isEmpty() && itemRegistryName(st).equals(name)) { src = s; break; }
+            }
+            if (src < 0) return false;
+            client.gameMode.handleContainerInput(cid, src, 0, ContainerInput.PICKUP, player);
+            client.gameMode.handleContainerInput(cid, gridSlot, 1, ContainerInput.PICKUP, player);
+            client.gameMode.handleContainerInput(cid, src, 0, ContainerInput.PICKUP, player);
+        }
+        return true;
+    }
+
     private static List<String> getDisplayIngredientNames(RecipeDisplay display) {
         return getDisplayIngredientNames(display, null);
     }
@@ -4724,11 +4889,40 @@ public final class ToolDispatcher {
                     if (filled != null && filled.booleanValue()) { resultReady = true; break; }
                     Thread.sleep(50);
                 }
+                boolean manualPlacementUsed = false;
+                if (!resultReady) {
+                    // H4b (T5.3-LIVE#2): the server's handlePlaceRecipe only
+                    // fills the grid when the player's SERVER-side recipe book
+                    // contains the recipe (ServerRecipeBook.contains, verified
+                    // via javap on ServerGamePacketListenerImpl) — otherwise it
+                    // only ghost-fills the grid (ClientboundPlaceGhostRecipePacket)
+                    // and the result slot never fills. Live, every not-yet-
+                    // unlocked recipe (torch, lever) failed here while unlocked
+                    // ones (sticks from planks) worked. Fallback: place the
+                    // ingredients manually with container clicks — the same
+                    // moves a human player makes — then re-poll the result slot.
+                    final RecipeDisplay fDisplay = resolved.entry().display();
+                    final boolean fNeedsTable = needsTable;
+                    Boolean manualPlaced = callOnClient(client, () -> Boolean
+                            .valueOf(placeRecipeIngredientsManually(client, cid, fDisplay, fNeedsTable)));
+                    if (manualPlaced != null && manualPlaced.booleanValue()) {
+                        manualPlacementUsed = true;
+                        long reReadyDeadline = System.currentTimeMillis() + 2000;
+                        while (System.currentTimeMillis() < reReadyDeadline) {
+                            Boolean filled = callOnClient(client, () -> Boolean
+                                    .valueOf(!client.player.containerMenu.getSlot(0).getItem().isEmpty()));
+                            if (filled != null && filled.booleanValue()) { resultReady = true; break; }
+                            Thread.sleep(50);
+                        }
+                    }
+                }
                 if (!resultReady) {
                     com.hyfuse.bridge.HyFuseClient.LOGGER.warn(
                             " Result slot never filled at attempt " + attempt
-                                    + " — server did not confirm the craft within 2s");
-                    abortReason = "result_slot_timeout";
+                                    + " — server did not confirm the craft within 2s"
+                                    + (manualPlacementUsed ? " (manual ingredient placement also tried)" : ""));
+                    abortReason = manualPlacementUsed
+                            ? "result_slot_timeout_after_manual_placement" : "result_slot_timeout";
                     break;
                 }
 
@@ -6934,6 +7128,8 @@ public final class ToolDispatcher {
         try {
             while (System.currentTimeMillis() < deadline) {
                 Thread.sleep(MOVE_POLL_INTERVAL_MS);
+                // J3-2: honor a mid-cycle standing-stop immediately.
+                if (StandingProcessEngine.cycleInterruptRequested) break;
                 arrived = callOnClient(client, () -> {
                     double dx = client.player.getX() - (x + 0.5);
                     double dy = client.player.getY() - (y + 0.5);
@@ -7496,9 +7692,21 @@ public final class ToolDispatcher {
             return null;
         });
 
+        // J3-2 (T5.3-LIVE#2): concede when no targets materialize. The old
+        // loop relied solely on the deadline (comment: "we rely on the
+        // timeout") — with no known ore near the base, Baritone #mine kept
+        // scanning (or pathing to far targets) and the standing mine leg ran
+        // >100s with stop requests ineffective. Concede after 20s of zero
+        // inventory movement (no target reached) — no_known_targets when
+        // nothing was ever mined.
+        long lastProgressAtMs = System.currentTimeMillis();
         try {
             while (System.currentTimeMillis() < deadline) {
                 Thread.sleep(MINE_POLL_INTERVAL_MS);
+                if (StandingProcessEngine.cycleInterruptRequested) {
+                    reason = "interrupted";
+                    break;
+                }
                 // Check inventory: did we gain `count` items?
                 int[] snapshot = callOnClient(client, () -> {
                     java.util.Map<String, Integer> inv = inventoryCounts(client.player);
@@ -7528,9 +7736,14 @@ public final class ToolDispatcher {
                     reason = "done";
                     break;
                 }
-                // Check if Baritone has stopped (no more targets found)
-                // We can't easily detect this, so we rely on the timeout.
-                // But if inventory hasn't changed for a long time, we concede.
+                // J3-2 concession: no inventory movement for 20s while under
+                // a deadline — Baritone found nothing reachable.
+                if (targetGained > 0 || totalGained > 0) {
+                    lastProgressAtMs = System.currentTimeMillis();
+                } else if (System.currentTimeMillis() - lastProgressAtMs > 20000) {
+                    reason = mined > 0 ? "no_more_targets": "no_known_targets";
+                    break;
+                }
             }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
@@ -8697,6 +8910,17 @@ public final class ToolDispatcher {
                 break;
             }
 
+            // J3-2 (T5.3-LIVE#2): honor a standing-stop between tasks — the
+            // remaining legs of a wedge cycle are skipped, not executed.
+            if (StandingProcessEngine.cycleInterruptRequested) {
+                results.add(childResultJson(tool, false, "interrupted", null));
+                skipped++;
+                for (int j = i + 1; j < total; j++) {
+                    results.add(childResultJson(toolNameAt(taskArr, j), false, "skipped", null));
+                    skipped++;
+                }
+                break;
+            }
             JsonObject childResult;
             try {
                 childResult = dispatchQueueTask(client, tool, childArgs);

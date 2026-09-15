@@ -64,6 +64,16 @@ final class StandingProcessEngine {
         JsonObject run(JsonArray tasks, String processName, String processType);
     }
 
+    /**
+     * J3-2 (T5.3-LIVE#2): mid-cycle interrupt hook. standing-stop sets this
+     * while a cycle is executing; long-running legs (mine-blocks #mine poll,
+     * goto-coords arrival poll, runQueueTaskList) check it between sleeps
+     * and concede promptly, so a no-target cycle can no longer wedge the
+     * single supervisor thread for minutes (live: op-113 ran >100s with
+     * stop requests ineffective). Cleared by the engine before each cycle.
+     */
+    static volatile boolean cycleInterruptRequested = false;
+
     /** Probe player death (provider marshals the read to the client thread). */
     interface DeathProbe {
         boolean isDead();
@@ -209,6 +219,7 @@ final class StandingProcessEngine {
                 return r;
             }
             p.stopRequested = true; // supervisor honors it at the next boundary
+            cycleInterruptRequested = true; // J3-2: running legs concede mid-cycle
         }
         if (wait) {
             long deadline = System.currentTimeMillis() + STOP_WAIT_MS;
@@ -299,6 +310,7 @@ final class StandingProcessEngine {
         }
 
         p.lastCycleStartMs = System.currentTimeMillis();
+        cycleInterruptRequested = false; // J3-2: fresh latch each cycle
         JsonArray tasks = buildCycleTasks(p);
         if (tasks == null) {
             // Guard with no tasks (shouldn't happen) — treat as idle cycle.
