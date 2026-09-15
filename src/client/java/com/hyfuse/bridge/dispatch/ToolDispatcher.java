@@ -2083,19 +2083,26 @@ public final class ToolDispatcher {
             closeContainer(client);
         }
         final Entity target = merchant;
+        final LocalPlayer playerF = player;
         InteractionResult openResult = callOnClient(client, () -> {
             lookAtEntity(client, target);
-            return client.gameMode.interact(player, target,
+            InteractionResult r = client.gameMode.interact(player, target,
                     new EntityHitResult(target), InteractionHand.MAIN_HAND);
+            playerF.swing(InteractionHand.MAIN_HAND);
+            return r;
         });
-        player.swing(InteractionHand.MAIN_HAND);
         result.addProperty("interactResult", String.valueOf(openResult));
 
         // Wait (bounded) for the MerchantMenu to open.
         long deadline = System.currentTimeMillis() + 2000;
         AbstractContainerMenu menu = null;
         while (System.currentTimeMillis() < deadline) {
-            AbstractContainerMenu current = client.player.containerMenu;
+            // G5-1: read containerMenu through callOnClient — an unmarshalled
+            // read from the queue worker has no happens-before with the main
+            // thread that swaps the field on screen-open, so the worker can
+            // miss the (visibly open) screen for the whole 2s window.
+            AbstractContainerMenu current = callOnClient(client,
+                    () -> client.player.containerMenu);
             if (current != null && current instanceof MerchantMenu) {
                 menu = current;
                 break;
